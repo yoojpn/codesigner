@@ -358,6 +358,8 @@ export default function App() {
   const [fileContent, setFileContent] = useState('')
   const [activeTab, setActiveTab] = useState('chat')
   const [attachments, setAttachments] = useState([])
+  const [sessionId, setSessionId] = useState('')
+  const [sessionDir, setSessionDir] = useState('')
 
   const bottomRef = useRef(null)
   const inputRef = useRef(null)
@@ -372,23 +374,33 @@ export default function App() {
     setMessages(m => [...m, { ...msg, id: Date.now() + Math.random() }])
   }, [])
 
-  const refreshFiles = useCallback(async () => {
+  const refreshFiles = useCallback(async (sid) => {
+    const id = sid ?? sessionId
+    if (!id) return
     try {
-      const r = await fetch('/api/files')
+      const r = await fetch(`/api/files?session_id=${encodeURIComponent(id)}`)
       const data = await r.json()
       if (data.files) setFiles(data.files)
     } catch {}
-  }, [])
+  }, [sessionId])
 
-  const refreshOutputs = useCallback(async () => {
+  const refreshOutputs = useCallback(async (sid) => {
+    const id = sid ?? sessionId
+    if (!id) return
     try {
-      const r = await fetch('/api/outputs')
+      const r = await fetch(`/api/outputs?session_id=${encodeURIComponent(id)}`)
       const data = await r.json()
       if (data.files) setOutputs(data.files)
     } catch {}
-  }, [])
+  }, [sessionId])
 
   useEffect(() => {
+    on('session_init', (msg) => {
+      setSessionId(msg.session_id)
+      setSessionDir(msg.session_dir)
+      refreshFiles(msg.session_id)
+      refreshOutputs(msg.session_id)
+    })
     on('text', (msg) => addMessage({ type: 'text', content: msg.content }))
     on('tool_call', (msg) => addMessage({ type: 'tool_call', tool: msg.tool, args: msg.args }))
     on('tool_result', (msg) => {
@@ -407,29 +419,29 @@ export default function App() {
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
   useEffect(() => {
-    if (connected) { refreshFiles(); refreshOutputs() }
-  }, [connected, refreshFiles, refreshOutputs])
+    if (connected && sessionId) { refreshFiles(); refreshOutputs() }
+  }, [connected, sessionId, refreshFiles, refreshOutputs])
 
   const openFile = useCallback(async (path) => {
     setSelectedFile(path)
     setActiveTab('editor')
     try {
-      const r = await fetch(`/api/file?path=${encodeURIComponent(path)}`)
+      const r = await fetch(`/api/file?path=${encodeURIComponent(path)}&session_id=${encodeURIComponent(sessionId)}`)
       const data = await r.json()
       setFileContent(data.content || '')
     } catch {}
-  }, [])
+  }, [sessionId])
 
   const downloadFile = useCallback((path) => {
-    window.open(`/api/download?path=${encodeURIComponent(path)}`)
-  }, [])
+    window.open(`/api/download?path=${encodeURIComponent(path)}&session_id=${encodeURIComponent(sessionId)}`)
+  }, [sessionId])
 
   const deleteOutput = useCallback(async (name) => {
     try {
-      await fetch(`/api/outputs/${encodeURIComponent(name)}`, { method: 'DELETE' })
+      await fetch(`/api/outputs/${encodeURIComponent(name)}?session_id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
       refreshOutputs()
     } catch {}
-  }, [refreshOutputs])
+  }, [sessionId, refreshOutputs])
 
   const submit = useCallback(() => {
     const text = input.trim()
