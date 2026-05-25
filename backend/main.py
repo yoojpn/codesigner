@@ -244,7 +244,13 @@ Guidelines:
 """
 
 # ---- Agent Loop ----
-NEEDS_APPROVAL = {"run_command", "delete_file", "apply_diff", "write_file"}
+def needs_approval(tool_name: str, args: dict) -> bool:
+    """Only require approval for privilege escalation (sudo, su, etc.)"""
+    if tool_name != "run_command":
+        return False
+    cmd = args.get("command", "")
+    danger = ["sudo ", "sudo	", "su ", "su	", "chmod 777", "rm -rf /", "mkfs", "dd if="]
+    return any(d in cmd for d in danger)
 
 async def run_agent(user_message: str, history: list, ws: WebSocket):
     api_key = rotator.next()
@@ -285,7 +291,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket):
             name, args = fc.name, dict(fc.args)
             await ws.send_json({"type": "tool_call", "tool": name, "args": args})
 
-            if name in NEEDS_APPROVAL:
+            if needs_approval(name, args):
                 call_id = str(id(fc))
                 await ws.send_json({"type": "approval_request", "tool": name, "args": args, "call_id": call_id})
                 try:
