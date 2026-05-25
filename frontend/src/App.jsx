@@ -160,7 +160,8 @@ function OutputPanel({ outputs, onRefresh, onDownload, onDelete }) {
 
 // ---- Tool Views ----
 function DiffView({ diff }) {
-  const lines = diff.split('\n')
+  const lines = diff.split('
+')
   return (
     <div className="diff-view">
       {lines.map((line, i) => {
@@ -433,7 +434,10 @@ export default function App() {
 
     let fileContext = ''
     if (attachments.length > 0) {
-      fileContext = attachments.map(a => `=== ${a.name} ===\n${a.content}`).join('\n\n')
+      fileContext = attachments.map(a => `=== ${a.name} ===
+${a.content}`).join('
+
+')
     }
 
     addMessage({ type: 'user', content: text, attachments })
