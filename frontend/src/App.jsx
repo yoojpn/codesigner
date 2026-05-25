@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { ChevronRight, ChevronDown, File, Folder, FolderOpen, X, Check, Terminal, Search, RefreshCw, Download, Plus, Trash2, Send, Loader2, AlertTriangle, Globe, GitBranch, Code2, Cpu, Paperclip, FolderDown } from 'lucide-react'
+import { ChevronRight, ChevronDown, File, Folder, FolderOpen, X, Check, Terminal, Search, RefreshCw, Download, Plus, Trash2, Send, Loader2, AlertTriangle, Globe, Code2, Cpu, Paperclip, AlertCircle } from 'lucide-react'
 import MonacoEditor from '@monaco-editor/react'
 import './App.css'
 
@@ -36,6 +36,14 @@ function useAgent(wsUrl) {
 }
 
 // ---- File Tree ----
+function getFileIcon(name, isDir, isOpen) {
+  if (isDir) return isOpen
+    ? <FolderOpen size={14} className="file-icon folder-open" />
+    : <Folder size={14} className="file-icon folder" />
+  const ext = name.split('.').pop().toLowerCase()
+  return <File size={14} className={`file-icon ext-${['js','jsx','ts','tsx','py','json','md','css','html','sh'].includes(ext) ? ext : 'default'}`} />
+}
+
 function FileTree({ files, selected, onSelect, onRefresh, onDownload }) {
   const [expanded, setExpanded] = useState(new Set(['.']))
   const tree = buildTree(files)
@@ -61,10 +69,10 @@ function FileTree({ files, selected, onSelect, onRefresh, onDownload }) {
   function renderNode(node, path = '', depth = 0) {
     return Object.entries(node)
       .filter(([k]) => k !== '__meta')
-      .sort(([a, av], [b, bv]) => {
+      .sort(([, av], [, bv]) => {
         const aDir = av.__meta?.isDir; const bDir = bv.__meta?.isDir
         if (aDir && !bDir) return -1; if (!aDir && bDir) return 1
-        return a.localeCompare(b)
+        return 0
       })
       .map(([key, val]) => {
         const meta = val.__meta || { name: key, isDir: false }
@@ -78,19 +86,17 @@ function FileTree({ files, selected, onSelect, onRefresh, onDownload }) {
             <div
               className={`tree-item ${isSelected ? 'selected' : ''}`}
               style={{ paddingLeft: `${depth * 12 + 8}px` }}
-              onClick={() => isDir ? toggle(fullPath) : onSelect(fullPath)}
+              onClick={() => { isDir ? toggle(fullPath) : onSelect(fullPath) }}
             >
-              {isDir
-                ? (isExp ? <ChevronDown size={12} className="tree-icon" /> : <ChevronRight size={12} className="tree-icon" />)
-                : <span style={{width:12,display:'inline-block'}} />}
-              {isDir
-                ? (isExp ? <FolderOpen size={14} className="file-icon folder-open" /> : <Folder size={14} className="file-icon folder" />)
-                : <File size={14} className={`file-icon ${getFileColor(key)}`} />}
+              <span className="tree-icon">
+                {isDir ? (isExp ? <ChevronDown size={12} /> : <ChevronRight size={12} />) : null}
+              </span>
+              {getFileIcon(key, isDir, isExp)}
               <span className="tree-label">{key}</span>
               {!isDir && (
-                <button className="tree-dl-btn" title="Download" onClick={e => { e.stopPropagation(); onDownload(fullPath) }}>
-                  <Download size={11} />
-                </button>
+                <span className="tree-item-actions">
+                  <button className="icon-btn" title="Download" onClick={(e) => { e.stopPropagation(); onDownload(fullPath) }}><Download size={11} /></button>
+                </span>
               )}
             </div>
             {isDir && isExp && renderNode(val, fullPath, depth + 1)}
@@ -102,121 +108,179 @@ function FileTree({ files, selected, onSelect, onRefresh, onDownload }) {
   return (
     <div className="file-tree">
       <div className="panel-header">
-        <span>EXPLORER</span>
-        <button className="icon-btn" onClick={onRefresh} title="Refresh"><RefreshCw size={13} /></button>
+        <span>Files</span>
+        <div className="panel-header-actions">
+          <button className="icon-btn" title="Refresh" onClick={onRefresh}><RefreshCw size={12} /></button>
+        </div>
       </div>
       <div className="tree-body">
         {files.length === 0
-          ? <div className="empty-state">No files yet</div>
-          : renderNode(tree)}
+          ? <div className="empty-state">No files in workspace</div>
+          : renderNode(tree)
+        }
       </div>
     </div>
   )
 }
 
-function getFileColor(name) {
-  const ext = name.split('.').pop()?.toLowerCase()
-  const map = { js:'js',jsx:'js',ts:'ts',tsx:'ts',py:'py',json:'json',md:'md',css:'css',html:'html',sh:'sh' }
-  return `ext-${map[ext] || 'default'}`
-}
-
-// ---- Message Components ----
-function ToolCallBadge({ tool, args }) {
-  const icons = { run_command: Terminal, web_search: Globe, write_file: Code2, read_file: File, apply_diff: GitBranch, list_files: Folder, search_files: Search, delete_file: Trash2 }
-  const Icon = icons[tool] || Cpu
-  const colors = { run_command:'yellow', web_search:'accent', write_file:'green', apply_diff:'purple', delete_file:'red' }
-  const color = colors[tool] || 'text2'
+// ---- Output Panel ----
+function OutputPanel({ outputs, onRefresh, onDownload, onDelete }) {
+  function formatSize(bytes) {
+    if (bytes < 1024) return `${bytes}B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`
+    return `${(bytes / 1024 / 1024).toFixed(1)}MB`
+  }
 
   return (
-    <div className={`tool-call tool-${color}`}>
-      <div className="tool-header">
-        <Icon size={13} />
-        <span className="tool-name">{tool}</span>
-        {tool === 'run_command' && <code className="tool-cmd">{args.command}</code>}
-        {tool === 'write_file' && <code className="tool-cmd">{args.path}</code>}
-        {tool === 'read_file' && <code className="tool-cmd">{args.path}</code>}
-        {tool === 'apply_diff' && <code className="tool-cmd">{args.path}</code>}
-        {tool === 'web_search' && <code className="tool-cmd">{args.query}</code>}
+    <div className="output-panel">
+      <div className="panel-header">
+        <span>Downloads</span>
+        <div className="panel-header-actions">
+          <button className="icon-btn" title="Refresh" onClick={onRefresh}><RefreshCw size={12} /></button>
+        </div>
+      </div>
+      <div className="output-list">
+        {outputs.length === 0
+          ? <div className="empty-outputs">No output files yet</div>
+          : outputs.map(f => (
+            <div className="output-item" key={f.name}>
+              <span className="output-name" title={f.name}>{f.name}</span>
+              <span className="output-size">{formatSize(f.size)}</span>
+              <div className="output-actions">
+                <button className="download-btn" onClick={() => onDownload(f.path)}><Download size={11} /> DL</button>
+                <button className="delete-output-btn" title="Delete" onClick={() => onDelete(f.name)}><X size={11} /></button>
+              </div>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+  )
+}
+
+// ---- Tool Views ----
+function DiffView({ diff }) {
+  const lines = diff.split('\n')
+  return (
+    <div className="diff-view">
+      {lines.map((line, i) => {
+        const cls = line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : line.startsWith('@@') ? 'hunk' : 'ctx'
+        return <div key={i} className={`diff-line ${cls}`}>{line || ' '}</div>
+      })}
+    </div>
+  )
+}
+
+function ToolCallBadge({ tool, args }) {
+  const icons = {
+    web_search: <Globe size={13} />,
+    run_command: <Terminal size={13} />,
+    apply_diff: <Code2 size={13} />,
+    search_files: <Search size={13} />,
+    fetch_url: <Globe size={13} />,
+    copy_to_output: <Download size={13} />,
+  }
+  const icon = icons[tool] || <Code2 size={13} />
+
+  let argsDisplay = ''
+  if (tool === 'web_search') argsDisplay = `"${args.query}"`
+  else if (tool === 'run_command') argsDisplay = `$ ${args.command}`
+  else if (tool === 'fetch_url') argsDisplay = args.url
+  else if (tool === 'apply_diff') argsDisplay = args.path
+  else if (tool === 'copy_to_output') argsDisplay = `${args.path} → output/${args.output_name || args.path?.split('/').pop()}`
+  else argsDisplay = JSON.stringify(args, null, 2)
+
+  return (
+    <div className="tool-badge">
+      <span className="tool-badge-icon">{icon}</span>
+      <div className="tool-badge-body">
+        <div className="tool-badge-header">
+          <span className="tool-name">{tool}</span>
+        </div>
+        <div className="tool-args">{argsDisplay}</div>
+        {tool === 'apply_diff' && args.diff && <DiffView diff={args.diff} />}
       </div>
     </div>
   )
 }
 
 function ToolResultView({ tool, result }) {
-  const [expanded, setExpanded] = useState(false)
+  if (result.cancelled) return (
+    <div className="tool-result neutral"><span className="tool-result-content">cancelled</span></div>
+  )
 
-  if (result.cancelled) return <div className="tool-result cancelled"><X size={12} /> Cancelled</div>
-  if (result.error) return <div className="tool-result error"><AlertTriangle size={12} /> {result.error}</div>
+  if (tool === 'web_search') {
+    if (result.error) return <div className="tool-result error"><span className="tool-result-content">{result.error}</span></div>
+    return (
+      <div className="search-results">
+        {(result.results || []).map((r, i) => (
+          <div key={i} className="search-result">
+            {r.title && <div className="search-result-title">{r.title}</div>}
+            {r.url && <div className="search-result-url">{r.url}</div>}
+            <div className="search-result-snippet">{r.snippet}</div>
+          </div>
+        ))}
+      </div>
+    )
+  }
 
   if (tool === 'run_command') {
-    const ok = result.returncode === 0
+    const hasErr = result.exit_code !== 0
     return (
-      <div className={`tool-result cmd-result ${ok ? 'success' : 'error'}`}>
-        <div className="result-header" onClick={() => setExpanded(!expanded)}>
-          {ok ? <Check size={12} /> : <X size={12} />}
-          <span>Exit {result.returncode}</span>
-          {(result.stdout || result.stderr) && <ChevronRight size={12} className={`expand-icon ${expanded?'expanded':''}`} />}
-        </div>
-        {expanded && (result.stdout || result.stderr) && (
-          <pre className="cmd-output">{result.stdout}{result.stderr && <span className="stderr">{result.stderr}</span>}</pre>
+      <div>
+        {(result.stdout || result.stderr) && (
+          <div className={`cmd-output ${hasErr ? 'exit-err' : ''}`}>
+            {result.stdout && <span>{result.stdout}</span>}
+            {result.stderr && <span style={{color: 'var(--red)'}}>{result.stderr}</span>}
+          </div>
         )}
+        <span className={`exit-code ${hasErr ? 'err' : 'ok'}`}>exit {result.exit_code ?? '?'}</span>
       </div>
     )
   }
 
-  if (tool === 'apply_diff' && result.diff) {
+  if (tool === 'fetch_url') {
+    if (result.error) return <div className="tool-result error"><span className="tool-result-content">{result.error}</span></div>
     return (
-      <div className="tool-result diff-result">
-        <div className="result-header" onClick={() => setExpanded(!expanded)}>
-          <GitBranch size={12} />
-          <span>Diff applied</span>
-          <ChevronRight size={12} className={`expand-icon ${expanded?'expanded':''}`} />
-        </div>
-        {expanded && <DiffView diff={result.diff} />}
+      <div className="tool-result neutral">
+        <span className="tool-result-content">{(result.content || '').slice(0, 500)}{(result.content?.length > 500) ? '…' : ''}</span>
       </div>
     )
   }
 
-  if (tool === 'write_file') return <div className="tool-result success"><Check size={12} /> Written: {result.path} ({result.bytes}B)</div>
-  if (tool === 'list_files') return <div className="tool-result info"><File size={12} /> {result.files?.length ?? 0} files</div>
-  if (tool === 'web_search') return (
-    <div className="tool-result info">
-      <Globe size={12} /> {result.results?.length ?? 0} results for "{result.query}"
-    </div>
-  )
+  if (result.error) return <div className="tool-result error"><span className="tool-result-content">{result.error}</span></div>
+  if (result.success) {
+    const msg = result.output_path
+      ? `✓ Saved to output: ${result.output_path}`
+      : result.path ? `✓ ${result.path}` : '✓ Done'
+    return <div className="tool-result success"><span className="tool-result-content">{msg}</span></div>
+  }
 
-  return <div className="tool-result success"><Check size={12} /> Done</div>
-}
-
-function DiffView({ diff }) {
-  if (!diff) return null
-  const lines = diff.split('\n')
-  return (
-    <pre className="diff-view">
-      {lines.map((line, i) => (
-        <div key={i} className={`diff-line ${line.startsWith('+') && !line.startsWith('+++') ? 'add' : line.startsWith('-') && !line.startsWith('---') ? 'del' : line.startsWith('@@') ? 'hunk' : ''}`}>
-          {line}
-        </div>
-      ))}
-    </pre>
-  )
+  const preview = JSON.stringify(result).slice(0, 200)
+  return <div className="tool-result neutral"><span className="tool-result-content">{preview}</span></div>
 }
 
 function ApprovalRequest({ tool, args, onApprove, onReject }) {
-  const dangerous = tool === 'delete_file' || (tool === 'run_command' && /rm |sudo |chmod/.test(args.command || ''))
+  let label = tool
+  if (tool === 'run_command') label = `Run: ${args.command}`
+  else if (tool === 'write_file') label = `Write: ${args.path}`
+  else if (tool === 'apply_diff') label = `Edit: ${args.path}`
+  else if (tool === 'delete_file') label = `Delete: ${args.path}`
+
   return (
-    <div className={`approval-box ${dangerous ? 'danger' : ''}`}>
+    <div className="approval-request">
       <div className="approval-header">
-        <AlertTriangle size={14} />
-        <span>Allow <strong>{tool}</strong>?</span>
+        <AlertCircle size={14} />
+        <span>Approval Required</span>
       </div>
-      {tool === 'run_command' && <code className="approval-cmd">$ {args.command}</code>}
-      {tool === 'write_file' && <code className="approval-cmd">Write to {args.path}</code>}
-      {tool === 'apply_diff' && <code className="approval-cmd">Patch {args.path}</code>}
-      {tool === 'delete_file' && <code className="approval-cmd danger-text">Delete {args.path}</code>}
+      <div className="approval-tool">{label}</div>
+      {tool === 'apply_diff' && args.diff
+        ? <DiffView diff={args.diff} />
+        : <pre className="approval-args">{JSON.stringify(args, null, 2)}</pre>
+      }
       <div className="approval-actions">
-        <button className="btn btn-approve" onClick={onApprove}><Check size={13} /> Allow</button>
-        <button className="btn btn-reject" onClick={onReject}><X size={13} /> Reject</button>
+        <button className="approve-btn" onClick={onApprove}><Check size={13} /> Allow</button>
+        <button className="reject-btn" onClick={onReject}><X size={13} /> Reject</button>
       </div>
     </div>
   )
@@ -259,8 +323,8 @@ function MessageBubble({ msg, onApprove, onReject }) {
   return null
 }
 
-// ---- Attach Files Bar ----
-function AttachBar({ attachments, onAttach, onRemove }) {
+// ---- Attach Bar ----
+function AttachButton({ onAttach }) {
   const inputRef = useRef(null)
 
   const handleFiles = (e) => {
@@ -274,27 +338,11 @@ function AttachBar({ attachments, onAttach, onRemove }) {
     e.target.value = ''
   }
 
-  if (attachments.length === 0) {
-    return (
-      <button className="attach-btn" onClick={() => inputRef.current?.click()} title="Attach file">
-        <input ref={inputRef} type="file" multiple style={{display:'none'}} onChange={handleFiles} />
-        <Paperclip size={14} />
-      </button>
-    )
-  }
-
   return (
-    <div className="attach-bar">
+    <button className="attach-btn" onClick={() => inputRef.current?.click()} title="Attach file">
       <input ref={inputRef} type="file" multiple style={{display:'none'}} onChange={handleFiles} />
-      {attachments.map((a, i) => (
-        <span key={i} className="attachment-chip">
-          <Paperclip size={10} />
-          <span>{a.name}</span>
-          <button onClick={() => onRemove(i)}><X size={10} /></button>
-        </span>
-      ))}
-      <button className="attach-more-btn" onClick={() => inputRef.current?.click()}><Plus size={12} /></button>
-    </div>
+      <Paperclip size={14} />
+    </button>
   )
 }
 
@@ -304,10 +352,10 @@ export default function App() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [files, setFiles] = useState([])
+  const [outputs, setOutputs] = useState([])
   const [selectedFile, setSelectedFile] = useState(null)
   const [fileContent, setFileContent] = useState('')
   const [activeTab, setActiveTab] = useState('chat')
-  const [pendingApprovals, setPendingApprovals] = useState({})
   const [attachments, setAttachments] = useState([])
 
   const bottomRef = useRef(null)
@@ -320,24 +368,6 @@ export default function App() {
     setMessages(m => [...m, { ...msg, id: Date.now() + Math.random() }])
   }, [])
 
-  useEffect(() => {
-    on('text', (msg) => addMessage({ type: 'text', content: msg.content }))
-    on('tool_call', (msg) => addMessage({ type: 'tool_call', tool: msg.tool, args: msg.args }))
-    on('tool_result', (msg) => {
-      addMessage({ type: 'tool_result', tool: msg.tool, result: msg.result })
-      if (msg.tool === 'list_files' && msg.result.files) setFiles(msg.result.files)
-    })
-    on('approval_request', (msg) => {
-      const callId = msg.call_id
-      addMessage({ type: 'approval', tool: msg.tool, args: msg.args, callId })
-      setPendingApprovals(p => ({ ...p, [callId]: true }))
-    })
-    on('done', () => { setLoading(false); refreshFiles() })
-    on('error', (msg) => { addMessage({ type: 'error', content: msg.content }); setLoading(false) })
-  }, [on, addMessage])
-
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
-
   const refreshFiles = useCallback(async () => {
     try {
       const r = await fetch('/api/files')
@@ -346,7 +376,35 @@ export default function App() {
     } catch {}
   }, [])
 
-  useEffect(() => { if (connected) refreshFiles() }, [connected, refreshFiles])
+  const refreshOutputs = useCallback(async () => {
+    try {
+      const r = await fetch('/api/outputs')
+      const data = await r.json()
+      if (data.files) setOutputs(data.files)
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    on('text', (msg) => addMessage({ type: 'text', content: msg.content }))
+    on('tool_call', (msg) => addMessage({ type: 'tool_call', tool: msg.tool, args: msg.args }))
+    on('tool_result', (msg) => {
+      addMessage({ type: 'tool_result', tool: msg.tool, result: msg.result })
+      if (msg.tool === 'list_files' && msg.result.files) setFiles(msg.result.files)
+      if (msg.tool === 'copy_to_output' && msg.result.success) refreshOutputs()
+    })
+    on('approval_request', (msg) => {
+      const callId = msg.call_id
+      addMessage({ type: 'approval', tool: msg.tool, args: msg.args, callId })
+    })
+    on('done', () => { setLoading(false); refreshFiles(); refreshOutputs() })
+    on('error', (msg) => { addMessage({ type: 'error', content: msg.content }); setLoading(false) })
+  }, [on, addMessage, refreshFiles, refreshOutputs])
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
+
+  useEffect(() => {
+    if (connected) { refreshFiles(); refreshOutputs() }
+  }, [connected, refreshFiles, refreshOutputs])
 
   const openFile = useCallback(async (path) => {
     setSelectedFile(path)
@@ -362,11 +420,17 @@ export default function App() {
     window.open(`/api/download?path=${encodeURIComponent(path)}`)
   }, [])
 
+  const deleteOutput = useCallback(async (name) => {
+    try {
+      await fetch(`/api/outputs/${encodeURIComponent(name)}`, { method: 'DELETE' })
+      refreshOutputs()
+    } catch {}
+  }, [refreshOutputs])
+
   const submit = useCallback(() => {
     const text = input.trim()
     if (!text || loading || !connected) return
 
-    // Build file context from attachments
     let fileContext = ''
     if (attachments.length > 0) {
       fileContext = attachments.map(a => `=== ${a.name} ===\n${a.content}`).join('\n\n')
@@ -382,12 +446,10 @@ export default function App() {
 
   const handleApprove = useCallback((callId) => {
     send({ type: 'approval', approved: true, call_id: callId })
-    setPendingApprovals(p => { const n = {...p}; delete n[callId]; return n })
   }, [send])
 
   const handleReject = useCallback((callId) => {
     send({ type: 'approval', approved: false, call_id: callId })
-    setPendingApprovals(p => { const n = {...p}; delete n[callId]; return n })
   }, [send])
 
   const lang = selectedFile ? selectedFile.split('.').pop() : 'plaintext'
@@ -395,7 +457,6 @@ export default function App() {
 
   return (
     <div className="app">
-      {/* Title Bar */}
       <div className="titlebar">
         <div className="titlebar-left">
           <Code2 size={16} className="logo-icon" />
@@ -413,14 +474,12 @@ export default function App() {
       </div>
 
       <div className="workspace">
-        {/* Sidebar */}
         <div className="sidebar">
           <FileTree files={files} selected={selectedFile} onSelect={openFile} onRefresh={refreshFiles} onDownload={downloadFile} />
+          <OutputPanel outputs={outputs} onRefresh={refreshOutputs} onDownload={downloadFile} onDelete={deleteOutput} />
         </div>
 
-        {/* Main Area */}
         <div className="main-area">
-          {/* Tab Bar */}
           <div className="tabs">
             <button className={`tab ${activeTab === 'chat' ? 'active' : ''}`} onClick={() => setActiveTab('chat')}>
               <Cpu size={13} /> Chat
@@ -433,7 +492,6 @@ export default function App() {
             )}
           </div>
 
-          {/* Chat Panel */}
           {activeTab === 'chat' && (
             <div className="chat-area">
               <div className="messages">
@@ -443,7 +501,7 @@ export default function App() {
                     <h2>Codesigner</h2>
                     <p>AI coding assistant. Ask me to write, edit, or run code.</p>
                     <div className="suggestions">
-                      {['Create a Python web scraper', 'Set up a Node.js project', 'Write a shell script', 'Search for recent docs'].map(s => (
+                      {['Create a Python web scraper', 'Set up a Node.js project', 'Write a shell script', 'Search the web for docs'].map(s => (
                         <button key={s} className="suggestion" onClick={() => { setInput(s); inputRef.current?.focus() }}>{s}</button>
                       ))}
                     </div>
@@ -463,18 +521,18 @@ export default function App() {
 
               <div className="input-area">
                 {attachments.length > 0 && (
-                  <AttachBar
-                    attachments={attachments}
-                    onAttach={a => setAttachments(prev => [...prev, a])}
-                    onRemove={i => setAttachments(prev => prev.filter((_, idx) => idx !== i))}
-                  />
+                  <div className="attach-bar">
+                    {attachments.map((a, i) => (
+                      <span key={i} className="attachment-chip">
+                        <Paperclip size={10} />
+                        <span>{a.name}</span>
+                        <button onClick={() => setAttachments(prev => prev.filter((_, idx) => idx !== i))}><X size={10} /></button>
+                      </span>
+                    ))}
+                  </div>
                 )}
                 <div className="input-row">
-                  <AttachBar
-                    attachments={[]}
-                    onAttach={a => setAttachments(prev => [...prev, a])}
-                    onRemove={() => {}}
-                  />
+                  <AttachButton onAttach={a => setAttachments(prev => [...prev, a])} />
                   <textarea
                     ref={inputRef}
                     className="chat-input"
@@ -493,7 +551,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Editor Panel */}
           {activeTab === 'editor' && selectedFile && (
             <div className="editor-area">
               <MonacoEditor
