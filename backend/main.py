@@ -1,7 +1,7 @@
 import os, json, asyncio, subprocess, difflib, glob, shutil, httpx
 from pathlib import Path
 from typing import Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -63,15 +63,12 @@ def tool_write_file(path: str, content: str) -> dict:
     return {"success": True, "path": path, "bytes": len(content)}
 
 def tool_apply_diff(path: str, diff: str) -> dict:
-    """Apply unified diff to a file"""
     target = (WORKSPACE / path).resolve()
     if not str(target).startswith(str(WORKSPACE)):
         return {"error": "Access denied"}
     original = target.read_text(errors="replace") if target.exists() else ""
     orig_lines = original.splitlines(keepends=True)
     try:
-        import patch as patch_lib
-        # Manual unified diff application
         new_lines = list(orig_lines)
         lines = diff.splitlines(keepends=True)
         i = 0
@@ -198,7 +195,7 @@ When running commands:
 Be concise but thorough. Show diffs when making changes. Explain what you're doing step by step.
 """
 
-async def run_agent(user_message: str, history: list, ws: WebSocket, approved_tools: set = None):
+async def run_agent(user_message: str, history: list, ws: WebSocket, file_context: str = ""):
     api_key = rotator.next()
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
@@ -206,7 +203,12 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, approved_to
         system_instruction=SYSTEM_PROMPT,
         tools=TOOL_DEFS
     )
-    messages = history + [{"role": "user", "parts": [{"text": user_message}]}]
+    
+    content = user_message
+    if file_context:
+        content = f"{user_message}\n\n[Attached files:\n{file_context}]"
+    
+    messages = history + [{"role": "user", "parts": [{"text": content}]}]
     
     for iteration in range(20):
         response = model.generate_content(messages)
@@ -234,24 +236,21 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, approved_to
             tool_name = fc.name
             tool_args = dict(fc.args)
             
-            # Send tool call event to frontend
             await ws.send_json({
                 "type": "tool_call",
                 "tool": tool_name,
                 "args": tool_args
             })
             
-            # Check if approval needed
             DANGEROUS = {"run_command", "delete_file", "apply_diff", "write_file"}
             needs_approval = tool_name in DANGEROUS
             
-            if needs_approval and (approved_tools is None or tool_name not in approved_tools):
+            if needs_approval:
                 await ws.send_json({"type": "approval_request", "tool": tool_name, "args": tool_args, "call_id": f"{iteration}_{tool_name}"})
-                # Wait for approval
                 try:
                     msg = await asyncio.wait_for(ws.receive_json(), timeout=120)
                     if msg.get("type") == "approval" and msg.get("approved"):
-                        pass  # proceed
+                        pass
                     else:
                         result_str = json.dumps({"cancelled": True, "reason": "User rejected"})
                         await ws.send_json({"type": "tool_result", "tool": tool_name, "result": {"cancelled": True}})
@@ -281,7 +280,8 @@ async def websocket_endpoint(ws: WebSocket):
         while True:
             data = await ws.receive_json()
             if data["type"] == "message":
-                history = await run_agent(data["content"], history[-20:], ws)
+                file_context = data.get("file_context", "")
+                history = await run_agent(data["content"], history[-20:], ws, file_context)
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -302,6 +302,18 @@ def read_file_api(path: str):
 @app.post("/api/file")
 async def write_file_api(path: str, body: dict):
     return tool_write_file(path, body["content"])
+
+@app.post("/api/upload")
+async def upload_file(file: UploadFile = File(...), path: str = ""):
+    """Upload a file into the workspace"""
+    dest_name = path or file.filename or "uploaded_file"
+    target = (WORKSPACE / dest_name).resolve()
+    if not str(target).startswith(str(WORKSPACE)):
+        raise HTTPException(400, "Invalid path")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    content = await file.read()
+    target.write_bytes(content)
+    return {"success": True, "path": dest_name, "size": len(content)}
 
 @app.get("/api/download")
 def download_file(path: str):

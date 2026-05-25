@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { ChevronRight, ChevronDown, File, Folder, FolderOpen, X, Check, Terminal, Search, RefreshCw, Download, Plus, Trash2, Send, Loader2, AlertTriangle, Globe, GitBranch, Code2, Cpu } from 'lucide-react'
+import { ChevronRight, ChevronDown, File, Folder, FolderOpen, X, Check, Terminal, Search, RefreshCw, Download, Plus, Trash2, Send, Loader2, AlertTriangle, Globe, GitBranch, Code2, Cpu, Paperclip, FolderDown } from 'lucide-react'
 import MonacoEditor from '@monaco-editor/react'
 import './App.css'
 
@@ -36,7 +36,7 @@ function useAgent(wsUrl) {
 }
 
 // ---- File Tree ----
-function FileTree({ files, selected, onSelect, onRefresh }) {
+function FileTree({ files, selected, onSelect, onRefresh, onDownload }) {
   const [expanded, setExpanded] = useState(new Set(['.']))
   const tree = buildTree(files)
 
@@ -87,6 +87,11 @@ function FileTree({ files, selected, onSelect, onRefresh }) {
                 ? (isExp ? <FolderOpen size={14} className="file-icon folder-open" /> : <Folder size={14} className="file-icon folder" />)
                 : <File size={14} className={`file-icon ${getFileColor(key)}`} />}
               <span className="tree-label">{key}</span>
+              {!isDir && (
+                <button className="tree-dl-btn" title="Download" onClick={e => { e.stopPropagation(); onDownload(fullPath) }}>
+                  <Download size={11} />
+                </button>
+              )}
             </div>
             {isDir && isExp && renderNode(val, fullPath, depth + 1)}
           </div>
@@ -220,7 +225,16 @@ function ApprovalRequest({ tool, args, onApprove, onReject }) {
 function MessageBubble({ msg, onApprove, onReject }) {
   if (msg.type === 'user') return (
     <div className="message user-msg">
-      <div className="msg-content">{msg.content}</div>
+      <div className="msg-content">
+        {msg.content}
+        {msg.attachments?.length > 0 && (
+          <div className="msg-attachments">
+            {msg.attachments.map((a, i) => (
+              <span key={i} className="attachment-chip"><Paperclip size={10} /> {a.name}</span>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 
@@ -245,6 +259,45 @@ function MessageBubble({ msg, onApprove, onReject }) {
   return null
 }
 
+// ---- Attach Files Bar ----
+function AttachBar({ attachments, onAttach, onRemove }) {
+  const inputRef = useRef(null)
+
+  const handleFiles = (e) => {
+    Array.from(e.target.files).forEach(file => {
+      const reader = new FileReader()
+      reader.onload = (ev) => {
+        onAttach({ name: file.name, content: ev.target.result, type: file.type })
+      }
+      reader.readAsText(file)
+    })
+    e.target.value = ''
+  }
+
+  if (attachments.length === 0) {
+    return (
+      <button className="attach-btn" onClick={() => inputRef.current?.click()} title="Attach file">
+        <input ref={inputRef} type="file" multiple style={{display:'none'}} onChange={handleFiles} />
+        <Paperclip size={14} />
+      </button>
+    )
+  }
+
+  return (
+    <div className="attach-bar">
+      <input ref={inputRef} type="file" multiple style={{display:'none'}} onChange={handleFiles} />
+      {attachments.map((a, i) => (
+        <span key={i} className="attachment-chip">
+          <Paperclip size={10} />
+          <span>{a.name}</span>
+          <button onClick={() => onRemove(i)}><X size={10} /></button>
+        </span>
+      ))}
+      <button className="attach-more-btn" onClick={() => inputRef.current?.click()}><Plus size={12} /></button>
+    </div>
+  )
+}
+
 // ---- Main App ----
 export default function App() {
   const [messages, setMessages] = useState([])
@@ -253,13 +306,12 @@ export default function App() {
   const [files, setFiles] = useState([])
   const [selectedFile, setSelectedFile] = useState(null)
   const [fileContent, setFileContent] = useState('')
-  const [activeTab, setActiveTabs] = useState('chat') // chat | editor
+  const [activeTab, setActiveTab] = useState('chat')
   const [pendingApprovals, setPendingApprovals] = useState({})
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [attachments, setAttachments] = useState([])
 
   const bottomRef = useRef(null)
   const inputRef = useRef(null)
-  const approvalResolvers = useRef({})
 
   const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
   const { connected, send, on } = useAgent(wsUrl)
@@ -306,19 +358,27 @@ export default function App() {
     } catch {}
   }, [])
 
-  const downloadFile = useCallback(() => {
-    if (selectedFile) window.open(`/api/download?path=${encodeURIComponent(selectedFile)}`)
-  }, [selectedFile])
+  const downloadFile = useCallback((path) => {
+    window.open(`/api/download?path=${encodeURIComponent(path)}`)
+  }, [])
 
   const submit = useCallback(() => {
     const text = input.trim()
     if (!text || loading || !connected) return
-    addMessage({ type: 'user', content: text })
+
+    // Build file context from attachments
+    let fileContext = ''
+    if (attachments.length > 0) {
+      fileContext = attachments.map(a => `=== ${a.name} ===\n${a.content}`).join('\n\n')
+    }
+
+    addMessage({ type: 'user', content: text, attachments })
     setInput('')
+    setAttachments([])
     setLoading(true)
-    send({ type: 'message', content: text })
+    send({ type: 'message', content: text, file_context: fileContext })
     inputRef.current?.focus()
-  }, [input, loading, connected, send, addMessage])
+  }, [input, loading, connected, send, addMessage, attachments])
 
   const handleApprove = useCallback((callId) => {
     send({ type: 'approval', approved: true, call_id: callId })
@@ -354,11 +414,9 @@ export default function App() {
 
       <div className="workspace">
         {/* Sidebar */}
-        {sidebarOpen && (
-          <div className="sidebar">
-            <FileTree files={files} selected={selectedFile} onSelect={openFile} onRefresh={refreshFiles} />
-          </div>
-        )}
+        <div className="sidebar">
+          <FileTree files={files} selected={selectedFile} onSelect={openFile} onRefresh={refreshFiles} onDownload={downloadFile} />
+        </div>
 
         {/* Main Area */}
         <div className="main-area">
@@ -370,7 +428,7 @@ export default function App() {
             {selectedFile && (
               <button className={`tab ${activeTab === 'editor' ? 'active' : ''}`} onClick={() => setActiveTab('editor')}>
                 <File size={13} /> {selectedFile.split('/').pop()}
-                <button className="tab-action" onClick={(e) => { e.stopPropagation(); downloadFile() }} title="Download"><Download size={11} /></button>
+                <button className="tab-action" onClick={(e) => { e.stopPropagation(); downloadFile(selectedFile) }} title="Download"><Download size={11} /></button>
               </button>
             )}
           </div>
@@ -404,19 +462,33 @@ export default function App() {
               </div>
 
               <div className="input-area">
-                <textarea
-                  ref={inputRef}
-                  className="chat-input"
-                  value={input}
-                  onChange={e => setInput(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit() } }}
-                  placeholder="Ask Codesigner... (Enter to send, Shift+Enter for newline)"
-                  rows={1}
-                  disabled={loading}
-                />
-                <button className={`send-btn ${loading ? 'loading' : ''}`} onClick={submit} disabled={loading || !input.trim()}>
-                  {loading ? <Loader2 size={15} className="spin" /> : <Send size={15} />}
-                </button>
+                {attachments.length > 0 && (
+                  <AttachBar
+                    attachments={attachments}
+                    onAttach={a => setAttachments(prev => [...prev, a])}
+                    onRemove={i => setAttachments(prev => prev.filter((_, idx) => idx !== i))}
+                  />
+                )}
+                <div className="input-row">
+                  <AttachBar
+                    attachments={[]}
+                    onAttach={a => setAttachments(prev => [...prev, a])}
+                    onRemove={() => {}}
+                  />
+                  <textarea
+                    ref={inputRef}
+                    className="chat-input"
+                    value={input}
+                    onChange={e => setInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit() } }}
+                    placeholder="Ask Codesigner... (Enter to send, Shift+Enter for newline)"
+                    rows={1}
+                    disabled={loading}
+                  />
+                  <button className={`send-btn ${loading ? 'loading' : ''}`} onClick={submit} disabled={loading || !input.trim()}>
+                    {loading ? <Loader2 size={15} className="spin" /> : <Send size={15} />}
+                  </button>
+                </div>
               </div>
             </div>
           )}
