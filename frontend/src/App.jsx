@@ -362,7 +362,10 @@ export default function App() {
   const bottomRef = useRef(null)
   const inputRef = useRef(null)
 
-  const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
+  const _backendUrl = (typeof __BACKEND_URL__ !== 'undefined' && __BACKEND_URL__) ? __BACKEND_URL__ : ''
+  const _wsProto = _backendUrl ? (_backendUrl.startsWith('https') ? 'wss' : 'ws') : (location.protocol === 'https:' ? 'wss' : 'ws')
+  const _wsHost = _backendUrl ? _backendUrl.replace(/^https?:\/\//, '') : location.host
+  const wsUrl = `${_wsProto}://${_wsHost}/ws`
   const { connected, send, on } = useAgent(wsUrl)
 
   const addMessage = useCallback((msg) => {
