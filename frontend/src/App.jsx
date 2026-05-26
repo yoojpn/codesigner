@@ -668,15 +668,23 @@ export default function App() {
   async function handleDrop(e) {
     e.preventDefault(); setIsDragging(false)
     const files = Array.from(e.dataTransfer.files)
+    const uploaded = []
     for (const file of files) {
       const fd = new FormData()
       fd.append('file', file)
       fd.append('chat_id', activeChatId)
       try {
         await fetch(apiUrl('/api/upload'), { method: 'POST', body: fd })
-        setAttachments(prev => [...prev, file.name])
+        uploaded.push(file.name)
         refreshFiles()
       } catch {}
+    }
+    if (uploaded.length > 0) {
+      setAttachments(prev => [...prev, ...uploaded])
+      // ファイル名をinputに追記（すでに入力があれば改行して追加）
+      const mention = uploaded.map(n => `@${n}`).join(' ')
+      setInput(prev => prev ? `${prev} ${mention}` : mention)
+      if (textareaRef.current) textareaRef.current.focus()
     }
   }
 
@@ -759,14 +767,23 @@ export default function App() {
               </div>
             ) : (
               <>
+                <div
+                  className={`chat-drop-zone ${isDragging ? 'drag-over' : ''}`}
+                  onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
+                  style={{display:'contents'}}
+                >
                 <MessageList messages={messages} onRetry={handleRetry} onEditSend={sendEdit} />
                 {pendingApproval && (
                   <div className="approval-overlay">
                     <ApprovalCard msg={pendingApproval} onApprove={() => handleApproval(true)} onReject={() => handleApproval(false)} />
                   </div>
                 )}
-                <div className={`input-area ${isDragging ? 'drag-over' : ''}`}
-                  onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
+                {isDragging && (
+                  <div className="drop-overlay">
+                    <div className="drop-overlay-inner">📎 ファイルをドロップして添付</div>
+                  </div>
+                )}
+                <div className="input-area">
                   {attachments.length > 0 && (
                     <div className="attachments-row">
                       {attachments.map(f => (
@@ -790,6 +807,7 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+                </div>{/* chat-drop-zone */}
               </>
             )}
           </div>

@@ -292,8 +292,12 @@ def to_json_safe(obj):
     if obj is None or isinstance(obj, (bool, int, float)):
         return obj
     if isinstance(obj, str):
-        # 制御文字除去（改行・タブは保持）
-        cleaned = re.sub(r'[--]', '', obj)
+        # 制御文字除去（改行・タブは保持）、サロゲートペア等も除去
+        try:
+            cleaned = obj.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+        except Exception:
+            cleaned = repr(obj)
+        cleaned = re.sub(r'[--]', '', cleaned)
         return cleaned[:10000] + "...(truncated)" if len(cleaned) > 10000 else cleaned
     if isinstance(obj, dict):
         return {str(k): to_json_safe(v) for k, v in obj.items()}
@@ -400,9 +404,10 @@ MODELS = ["gemma-4-31b-it", "gemma-4-26b-a4b-it"]
 
 # メタコメント行の検出パターン
 _META_LINE_RE = re.compile(
-    r"^[\*\-]?\s*("
+    r"^[\*\-_]{0,3}\s*("
     r"User said[:\s]|The user (said|wrote|asked|is|just)|"
     r"I should|I will|I need to|"
+    r"Since it|Since the|As it|Because (it|the)|"
     r"Role:|Constraint:|Language:|Content:|Context:|Note:|"
     r"Responding|Let me think|Here(?:\'s| is) my"
     r")",
