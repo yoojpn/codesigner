@@ -404,7 +404,11 @@ function MessageList({ messages, onRetry, onEditSend }) {
             </div>
           </div>
         )
-        if (msg.type === 'tool_call') return <ToolCallBadge key={i} tool={msg.tool} args={msg.args} />
+        if (msg.type === 'system') return (
+          <div key={i} className="message system-msg">
+            <ReactMarkdown>{msg.content}</ReactMarkdown>
+          </div>
+        )
         if (msg.type === 'tool_result') return <ToolResultView key={i} tool={msg.tool} result={msg.result} />
         if (msg.type === 'thinking') return (
           <div key={i} className="message agent-msg">
@@ -436,6 +440,7 @@ export default function App() {
   const [attachments, setAttachments] = useState([])
   const [isDragging, setIsDragging] = useState(false)
   const [lastUserMsg, setLastUserMsg] = useState('')
+  const [thinkingLevel, setThinkingLevel] = useState('none')
   const textareaRef = useRef(null)
 
   const { connected, send, on } = useAgent(activeChatId)
@@ -461,14 +466,20 @@ export default function App() {
   useEffect(() => {
     on('ready', (msg) => {
       const chat = msg.chat
-      // Rebuild message list from DB history
       const rebuilt = []
       for (const m of chat.messages) {
         rebuilt.push({ type: m.role === 'user' ? 'user' : 'text', content: m.content })
       }
       setMessages(rebuilt)
+      if (msg.thinking_level) setThinkingLevel(msg.thinking_level)
       refreshFiles(chat.id)
       refreshOutputs(chat.id)
+    })
+    on('thinking_level', (msg) => {
+      setThinkingLevel(msg.level)
+    })
+    on('system_msg', (msg) => {
+      setMessages(prev => [...prev, { type: 'system', content: msg.content }])
     })
     on('stream', (msg) => {
       setMessages(prev => {
@@ -688,6 +699,9 @@ export default function App() {
             ))}
           </div>
           <div className="topbar-right">
+            <span className={`thinking-badge thinking-${thinkingLevel}`} title="/thinking on|off|auto で切り替え">
+              {thinkingLevel === 'high' ? '🧠 Thinking ON' : thinkingLevel === 'auto' ? '🔄 Thinking AUTO' : '⚡ Thinking OFF'}
+            </span>
             <div className={`status-indicator ${connected ? 'connected' : ''}`} />
             <span className="status-label">{connected ? 'connected' : 'connecting…'}</span>
           </div>

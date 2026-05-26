@@ -412,7 +412,7 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 # ---- Agent Loop with streaming ----
-async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir: Path, chat_id: str):
+async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir: Path, chat_id: str, thinking_level: str = "none"):
     _, client = rotator.next_client()
     messages = history + [types.Content(role="user", parts=[types.Part(text=user_message)])]
     loop = asyncio.get_event_loop()
@@ -443,6 +443,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                                 system_instruction=make_system_prompt(session_dir),
                                 tools=TOOL_DEFS,
                                 temperature=0.7,
+                                thinking_config=types.ThinkingConfig(thinking_level=thinking_level),
                             ),
                         )
 
@@ -559,11 +560,14 @@ async def websocket_endpoint(ws: WebSocket, chat_id: str):
         role = "user" if m["role"] == "user" else "model"
         history.append(types.Content(role=role, parts=[types.Part(text=m["content"])]))
 
+    # thinking_level: "none" | "auto" | "high"
+    thinking_level = "none"
+
     await ws.send_json({"type": "ready", "chat": {
         "id": chat["id"], "title": chat["title"],
         "session_dir": chat["session_dir"],
         "messages": chat["messages"]
-    }})
+    }, "thinking_level": thinking_level})
 
     try:
         while True:
@@ -574,15 +578,36 @@ async def websocket_endpoint(ws: WebSocket, chat_id: str):
                 continue
             if data["type"] == "message":
                 user_msg = data["content"]
+
+                # /thinking コマンド処理
+                cmd = user_msg.strip().lower()
+                if cmd in ("/thinking on", "/thinking high"):
+                    thinking_level = "high"
+                    await ws.send_json({"type": "thinking_level", "level": thinking_level})
+                    await ws.send_json({"type": "system_msg", "content": "🧠 Thinking: ON (high)"})
+                    continue
+                elif cmd in ("/thinking off", "/thinking none"):
+                    thinking_level = "none"
+                    await ws.send_json({"type": "thinking_level", "level": thinking_level})
+                    await ws.send_json({"type": "system_msg", "content": "⚡ Thinking: OFF"})
+                    continue
+                elif cmd in ("/thinking auto",):
+                    thinking_level = "auto"
+                    await ws.send_json({"type": "thinking_level", "level": thinking_level})
+                    await ws.send_json({"type": "system_msg", "content": "🔄 Thinking: AUTO"})
+                    continue
+                elif cmd == "/thinking":
+                    await ws.send_json({"type": "system_msg", "content": f"現在のThinkingモード: **{thinking_level}**\n`/thinking on` | `/thinking off` | `/thinking auto` で切り替え"})
+                    continue
+
                 save_message(chat_id, "user", user_msg)
-                user_msg_llm = "<thought off>" + user_msg
 
                 if len(chat["messages"]) == 0:
                     title = auto_title(user_msg)
                     update_chat_title(chat_id, title)
                     await ws.send_json({"type": "title_updated", "title": title})
 
-                history = await run_agent(user_msg_llm, history, ws, session_dir, chat_id)
+                history = await run_agent(user_msg, history, ws, session_dir, chat_id, thinking_level=thinking_level)
 
     except WebSocketDisconnect:
         pass
