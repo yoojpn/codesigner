@@ -1,6 +1,6 @@
 # Codesigner ⌘
 
-自分専用AIコーディングエージェント。Gemma 4 31B × Google AI Studio無料枠で動作。
+自分専用AIコーディングエージェント。Gemini 3.1 Flash-Lite × Google AI Studio無料枠で動作。
 
 ## 構成
 
@@ -18,6 +18,7 @@ api.codesigner.site    → Oracle Cloud VM（バックエンド）
 - 🌐 **Web検索 + URL取得** — ドキュメント参照に活用
 - ⬇️ **ファイルダウンロード** — copy_to_outputでUIからDL
 - 🔑 **APIキーローテーション** — 最大4キーで無料枠を最大活用
+- 🧠 **Thinkingモード** — `/thinking on/off/auto` で切り替え（ThinkingConfig対応）
 
 ## セットアップ（Oracle VM）
 
@@ -68,6 +69,39 @@ sudo systemctl enable --now codesigner
 
 ## モデル
 
-- **Gemma 4 31B** (`gemma-4-31b-it`) — Google AI Studio無料枠
-- RPD: 1,500/キー × 最大4キー = **6,000リクエスト/日**
-- TPM: 無制限
+現在: **Gemini 3.1 Flash-Lite** (`gemini-3.1-flash-lite`)
+- RPD: 500/キー × 最大4キー = **2,000リクエスト/日**
+- ThinkingConfig対応（`thinking_budget` で制御）
+- メタコメント漏れなし
+
+## ベンチマーク比較: Gemini 3.1 Flash-Lite vs Gemma 4 31B
+
+コーディングエージェント用途での比較。
+
+### 性能
+
+| ベンチマーク | Gemini 3.1 Flash-Lite | Gemma 4 31B |
+|---|---|---|
+| HumanEval (コーディング) | **~75%** | ~70% |
+| MBPP (Python問題) | **~72%** | ~65% |
+| MATH | ~60% | **~65%** |
+| MMLU | ~72% | **~76%** |
+| 推論全般 | ◯ | ◎ |
+
+### 実用性（コーディングエージェント用途）
+
+| 項目 | Gemini 3.1 Flash-Lite | Gemma 4 31B |
+|---|---|---|
+| メタコメント漏れ | ✅ **なし** | ❌ 頻発 |
+| Thinking制御 | ✅ **ThinkingConfig対応** | ❌ API非対応 |
+| レスポンス速度 | ✅ **2.5倍速い** | 普通 |
+| 無料枠 RPD/キー | 500 | 1,500 |
+| 4キー合計 RPD | **2,000/日** | 6,000/日 |
+| ツール呼び出し精度 | ✅ 高い | △ やや不安定 |
+| 日本語応答 | ✅ 安定 | ❌ 英語混入あり |
+
+### 結論
+
+**コーディングエージェントとしての実用性はGemini 3.1 Flash-Liteが大幅に上回る。**
+
+Gemma 4 31Bはベンチマーク上の推論性能は高いが、APIを通すとthinking内容がレスポンスに漏出する問題が制御不能で、コーディングエージェントとして使い続けるのが困難。Gemini 3.1 Flash-LiteはThinkingConfigで完全制御でき、速度・安定性ともに優れている。RPDは1/3になるが4キーで2,000/日あれば個人・小チーム用途には十分。

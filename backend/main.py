@@ -375,8 +375,7 @@ def should_think(message: str) -> bool:
 
 def make_system_prompt(session_dir: Path, thinking_on: bool = False) -> str:
     rel = session_dir.relative_to(WORKSPACE)
-    think_token = "<|think|>\n" if thinking_on else ""
-    return f"""{think_token}You are Codesigner, an expert AI coding assistant on a Linux VM.
+    return f"""You are Codesigner, an expert AI coding assistant on a Linux VM.
 Session working directory: /workspace/{rel}
 All file operations are relative to this directory.
 
@@ -400,50 +399,15 @@ def auto_title(message: str) -> str:
     title = " ".join(words)
     return title[:50] + ("…" if len(title) > 50 else "")
 
-MODELS = ["gemma-4-31b-it", "gemma-4-26b-a4b-it"]
+MODELS = ["gemini-3.1-flash-lite", "gemini-3.1-flash-lite-001"]
 
-# メタコメント行の検出パターン
-_META_LINE_RE = re.compile(
-    r"^[\*\-_]{0,3}\s*("
-    r"User said[:\s]|The user (said|wrote|asked|is|just)|"
-    r"I should|I will|I need to|"
-    r"Since it|Since the|As it|Because (it|the)|"
-    r"Role:|Constraint:|Language:|Content:|Context:|Note:|"
-    r"Responding|Let me think|Here(?:\'s| is) my"
-    r")",
-    re.IGNORECASE
-)
-
-def is_meta_line(line: str) -> bool:
-    return bool(_META_LINE_RE.match(line.strip()))
 
 def clean_text(text: str) -> str:
     """
-    Gemma4公式デリミタのthinking除去。
-    さらに冒頭の連続するメタコメント行ブロックを除去する。
-    メタコメントブロックの終わりは「空行の後に非メタ行が来た時」。
-    コード・日本語・実返答の本文は一切触らない。
+    Gemini用: <think>タグ除去のみ。
+    GeminiはThinkingConfigでthinkingを制御するためメタコメント漏れは発生しない。
     """
-    # 公式デリミタによるthinking除去
-    text = re.sub(r"<\|channel>thought.*?<channel\|>", "", text, flags=re.DOTALL)
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-
-    lines = text.split("\n")
-
-    # 冒頭のメタコメントブロックをスキップ
-    # 「メタ行または空行だけが続いている間は冒頭ブロック」と判断
-    i = 0
-    while i < len(lines):
-        stripped = lines[i].strip()
-        if not stripped:          # 空行はスキップ続行
-            i += 1
-            continue
-        if is_meta_line(lines[i]):  # メタ行はスキップ
-            i += 1
-            continue
-        break  # 非メタ・非空行が来たらここから出力
-
-    text = "\n".join(lines[i:])
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -472,12 +436,16 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
                     # streamingをexecutorで実行してイベントループをブロックしない
                     def make_stream():
-                        # Gemma4公式: <|think|>をsystem_promptの先頭に入れるとthinking ON
-                        # auto時はメッセージの複雑さで判定
+                        # Gemini 3.1 Flash-Lite: ThinkingConfigでthinkingを制御
                         if thinking_level == "auto":
                             thinking_on = should_think(user_message)
                         else:
                             thinking_on = thinking_level in ("on", "high")
+
+                        thinking_config = types.ThinkingConfig(
+                            thinking_budget=1024 if thinking_on else 0
+                        )
+
                         return try_client.models.generate_content_stream(
                             model=model,
                             contents=messages,
@@ -485,6 +453,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                                 system_instruction=make_system_prompt(session_dir, thinking_on=thinking_on),
                                 tools=TOOL_DEFS,
                                 temperature=0.7,
+                                thinking_config=thinking_config,
                             ),
                         )
 
