@@ -356,9 +356,23 @@ TOOL_DEFS = [types.Tool(function_declarations=[
         parameters=types.Schema(type="OBJECT",properties={"path":types.Schema(type="STRING"),"output_name":types.Schema(type="STRING")},required=["path"])),
 ])]
 
-def make_system_prompt(session_dir: Path) -> str:
+# Auto thinkingの判定：複雑なタスクかどうかをキーワードで判断
+AUTO_THINKING_KEYWORDS = [
+    "debug", "fix", "error", "bug", "why", "implement", "design", "architect",
+    "optimize", "refactor", "algorithm", "analyze", "compare", "explain",
+    "バグ", "エラー", "修正", "実装", "設計", "最適化", "リファクタ", "アルゴリズム",
+    "分析", "なぜ", "どうして", "仕組み", "デバッグ",
+]
+
+def should_think(message: str) -> bool:
+    """Autoモード用: メッセージが複雑なタスクか判定"""
+    lower = message.lower()
+    return any(kw in lower for kw in AUTO_THINKING_KEYWORDS)
+
+def make_system_prompt(session_dir: Path, thinking_on: bool = False) -> str:
     rel = session_dir.relative_to(WORKSPACE)
-    return f"""You are Codesigner, an expert AI coding assistant on a Linux VM.
+    think_token = "<|think|>\n" if thinking_on else ""
+    return f"""{think_token}You are Codesigner, an expert AI coding assistant on a Linux VM.
 Session working directory: /workspace/{rel}
 All file operations are relative to this directory.
 
@@ -368,7 +382,6 @@ All file operations are relative to this directory.
 - web_search + fetch_url for docs/packages
 - copy_to_output to make files downloadable
 - Be concise. Show what changed. Explain steps briefly.
-- IMPORTANT: Do NOT include any internal reasoning, thinking process, or meta-commentary in your responses. Reply directly and concisely.
 - Do NOT translate or explain what the user said. Just respond to them.
 - Respond in the same language the user uses.
 """
@@ -383,58 +396,19 @@ def auto_title(message: str) -> str:
 MODELS = ["gemma-4-31b-it", "gemma-4-26b-a4b-it"]
 
 def clean_text(text: str) -> str:
-    # タグで囲まれたthinking除去
+    """
+    Gemma 4公式: thinkingは <|channel>thought\n...<channel|> で囲まれる
+    Thinking ONのとき: この部分を除去して返答だけを返す
+    Thinking OFFのとき: 26B/31Bは空の <|channel>thought\n<channel|> が出るので除去
+    """
+    # 公式デリミタによるthinking除去（DOTALLで複数行対応）
+    text = re.sub(r"<\|channel>thought.*?<channel\|>", "", text, flags=re.DOTALL)
+    # 念のため旧パターンも除去
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    text = re.sub(r"<thought>.*?</thought>", "", text, flags=re.DOTALL)
-    text = re.sub(r"<[|]channel>thought.*?<channel[|]>", "", text, flags=re.DOTALL)
-
-    # 行ベースでthinkingブロックを除去
-    # 「The user ...」から始まる英語メタコメントブロックを、日本語/実返答が出るまでスキップ
-    lines = text.split("\n")
-    result_lines = []
-    skip_mode = False
-
-    for line in lines:
-        stripped = line.strip()
-
-        # thinkingブロック開始の検出
-        if re.match(r"^The user (is|said|mentioned|asked|wants|has|seems|shared|just)", stripped):
-            skip_mode = True
-
-        if skip_mode:
-            # 日本語文字が含まれていたら、そこから実返答
-            if re.search(r"[\u3000-\u9fff\uff00-\uffef]", stripped):
-                m = re.search(r"[\u3000-\u9fff\uff00-\uffef]", line)
-                if m:
-                    result_lines.append(line[m.start():])
-                skip_mode = False
-                continue
-            # 英語のメタコメント行はスキップ（箇条書き・空行含む）
-            continue
-        else:
-            result_lines.append(line)
-
-    text = "\n".join(result_lines)
-
-    # 残った1行系パターン
-    text = re.sub(r"(?m)^I should.*$", "", text)
-    text = re.sub(r"(?m)^I need to.*$", "", text)
-    text = re.sub(r"(?m)^\(Internal check:.*?\).*$", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
-
     return text.strip()
 
 # ---- Agent Loop with streaming ----
-def make_thinking_config(model: str, thinking_level: str):
-    """
-    Gemma系はThinkingConfig非対応なのでNoneを返す（configに渡さない）
-    Gemini 2.5/3系のみ thinking_budget で制御
-    """
-    if "gemma" in model.lower():
-        return None
-    budget_map = {"none": 0, "off": 0, "auto": -1, "high": 8192, "on": 8192}
-    return types.ThinkingConfig(thinking_budget=budget_map.get(thinking_level, 0))
-
 async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir: Path, chat_id: str, thinking_level: str = "none"):
     _, client = rotator.next_client()
     messages = history + [types.Content(role="user", parts=[types.Part(text=user_message)])]
@@ -459,18 +433,20 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
                     # streamingをexecutorで実行してイベントループをブロックしない
                     def make_stream():
-                        tc = make_thinking_config(model, thinking_level)
-                        cfg_kwargs = dict(
-                            system_instruction=make_system_prompt(session_dir),
-                            tools=TOOL_DEFS,
-                            temperature=0.7,
-                        )
-                        if tc is not None:
-                            cfg_kwargs["thinking_config"] = tc
+                        # Gemma4公式: <|think|>をsystem_promptの先頭に入れるとthinking ON
+                        # auto時はメッセージの複雑さで判定
+                        if thinking_level == "auto":
+                            thinking_on = should_think(user_message)
+                        else:
+                            thinking_on = thinking_level in ("on", "high")
                         return try_client.models.generate_content_stream(
                             model=model,
                             contents=messages,
-                            config=types.GenerateContentConfig(**cfg_kwargs),
+                            config=types.GenerateContentConfig(
+                                system_instruction=make_system_prompt(session_dir, thinking_on=thinking_on),
+                                tools=TOOL_DEFS,
+                                temperature=0.7,
+                            ),
                         )
 
                     stream = await loop.run_in_executor(None, make_stream)
