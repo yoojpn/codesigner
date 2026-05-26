@@ -410,7 +410,8 @@ RULES:
 - NEVER output lines like "User said:", "The user wrote:", "* User said:", "I should", "Role:", "Constraint:", "Language:" or any analysis of the conversation context.
 - NEVER translate or repeat the user's message back to them.
 - If the user writes in Japanese, your ENTIRE response must be in Japanese (except code).
-- apply_diff for targeted edits; write_file for new/full-rewrite files
+- NEVER output diff text in chat. ALWAYS call the apply_diff tool directly — no exceptions.
+- NEVER output file contents in chat. ALWAYS call write_file tool directly.
 - After apply_diff or write_file succeeds, do NOT read_file to verify — trust the result and report done.
 - read_file before editing existing files
 - User-uploaded files are saved to the `input/` folder. When the user mentions a file, check `input/` first.
