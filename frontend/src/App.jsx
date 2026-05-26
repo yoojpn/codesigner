@@ -342,7 +342,8 @@ function MessageList({ messages, onRetry, onEditSend }) {
   }
 
   function commitEdit(i) {
-    if (editValue.trim()) onEditSend(editValue.trim())
+    const msg = messages[i]
+    if (editValue.trim()) onEditSend(editValue.trim(), msg?.dbIndex ?? null)
     setEditingIdx(null)
   }
 
@@ -399,7 +400,7 @@ function MessageList({ messages, onRetry, onEditSend }) {
             <div className="msg-body">
               <div className="msg-content error-msg">Error: {msg.content}</div>
               <div className="agent-msg-actions">
-                <button className="retry-btn" onClick={onRetry}><RefreshCw size={11} /> 再試行</button>
+                <button className="retry-btn" onClick={() => { const lastUser = [...messages].reverse().find(m => m.type === "user"); onRetry(lastUser?.dbIndex ?? null) }}><RefreshCw size={11} /> 再試行</button>
               </div>
             </div>
           </div>
@@ -467,8 +468,14 @@ export default function App() {
     on('ready', (msg) => {
       const chat = msg.chat
       const rebuilt = []
+      let dbIdx = 0
       for (const m of chat.messages) {
-        rebuilt.push({ type: m.role === 'user' ? 'user' : 'text', content: m.content })
+        if (m.role === 'user') {
+          rebuilt.push({ type: 'user', content: m.content, dbIndex: dbIdx })
+          dbIdx++
+        } else {
+          rebuilt.push({ type: 'text', content: m.content })
+        }
       }
       setMessages(rebuilt)
       if (msg.thinking_level) setThinkingLevel(msg.thinking_level)
@@ -585,13 +592,46 @@ export default function App() {
     const text = (overrideText ?? input).trim()
     if (!text || loading || !connected || !activeChatId) return
     setLastUserMsg(text)
-    setMessages(prev => [...prev, { type: 'user', content: text }, { type: 'thinking' }])
+    setMessages(prev => {
+      const userCount = prev.filter(m => m.type === 'user').length
+      return [...prev, { type: 'user', content: text, dbIndex: userCount }, { type: 'thinking' }]
+    })
     setInput('')
     setAttachments([])
     setLoading(true)
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     send({ type: 'message', content: text })
   }, [input, loading, connected, activeChatId, send])
+
+  const sendEdit = useCallback((text, dbIndex) => {
+    if (!text || loading || !connected || !activeChatId) return
+    // dbIndex以降のメッセージをUIから切り詰めてからやり直す
+    setMessages(prev => {
+      const cutUiIdx = dbIndex !== null
+        ? prev.findIndex(m => m.type === 'user' && m.dbIndex === dbIndex)
+        : prev.filter(m => m.type === 'user').length - 1
+      const truncated = cutUiIdx >= 0 ? prev.slice(0, cutUiIdx) : prev
+      return [...truncated, { type: 'user', content: text, dbIndex: dbIndex ?? 0 }, { type: 'thinking' }]
+    })
+    setLoading(true)
+    send({ type: 'edit', content: text, truncate_at: dbIndex })
+  }, [loading, connected, activeChatId, send])
+
+  const handleRetry = useCallback((dbIndex) => {
+    if (loading || !connected || !activeChatId) return
+    // dbIndex以降（その返答も含む）をUIから削除してthinkingを追加
+    setMessages(prev => {
+      const cutUiIdx = dbIndex !== null
+        ? prev.findIndex(m => m.type === 'user' && m.dbIndex === dbIndex)
+        : prev.filter(m => m.type === 'user').length - 1
+      const truncated = cutUiIdx >= 0 ? prev.slice(0, cutUiIdx) : prev.slice(0, -1)
+      const userMsg = prev.find(m => m.type === 'user' && m.dbIndex === dbIndex)
+      if (!userMsg) return prev
+      return [...truncated, { ...userMsg }, { type: 'thinking' }]
+    })
+    setLoading(true)
+    send({ type: 'retry', truncate_at: dbIndex })
+  }, [loading, connected, activeChatId, send])
 
   const openFile = useCallback(async (path) => {
     setSelectedFile(path)
@@ -719,7 +759,7 @@ export default function App() {
               </div>
             ) : (
               <>
-                <MessageList messages={messages} onRetry={() => sendMessage(lastUserMsg)} onEditSend={(text) => sendMessage(text)} />
+                <MessageList messages={messages} onRetry={handleRetry} onEditSend={sendEdit} />
                 {pendingApproval && (
                   <div className="approval-overlay">
                     <ApprovalCard msg={pendingApproval} onApprove={() => handleApproval(true)} onReject={() => handleApproval(false)} />

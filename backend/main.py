@@ -118,6 +118,19 @@ def save_message(chat_id: str, role: str, content: str):
         db.execute("INSERT INTO messages VALUES (?,?,?,?,?)", (uuid.uuid4().hex, chat_id, role, content, now_iso()))
         db.execute("UPDATE chats SET updated_at=? WHERE id=?", (now_iso(), chat_id))
 
+def truncate_messages_from(chat_id: str, from_index: int):
+    """指定インデックス以降のメッセージをDBから削除"""
+    with get_db() as db:
+        msgs = db.execute(
+            "SELECT id FROM messages WHERE chat_id=? ORDER BY created_at", (chat_id,)
+        ).fetchall()
+        ids_to_delete = [m["id"] for m in msgs[from_index:]]
+        if ids_to_delete:
+            db.execute(
+                f"DELETE FROM messages WHERE id IN ({','.join('?'*len(ids_to_delete))})",
+                ids_to_delete
+            )
+
 def update_chat_title(chat_id: str, title: str):
     with get_db() as db:
         db.execute("UPDATE chats SET title=? WHERE id=?", (title, chat_id))
@@ -412,16 +425,15 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 # ---- Agent Loop with streaming ----
-def make_thinking_config(thinking_level: str) -> types.ThinkingConfig:
+def make_thinking_config(model: str, thinking_level: str):
     """
-    thinking_level: "none"/"off" → budget=0 (thinking無効)
-                    "auto"       → budget=-1 (動的)
-                    "high"/"on"  → budget=8192 (高思考)
-    SDK 1.14.0は thinking_budget と include_thoughts のみサポート
+    Gemma系はThinkingConfig非対応なのでNoneを返す（configに渡さない）
+    Gemini 2.5/3系のみ thinking_budget で制御
     """
+    if "gemma" in model.lower():
+        return None
     budget_map = {"none": 0, "off": 0, "auto": -1, "high": 8192, "on": 8192}
-    budget = budget_map.get(thinking_level, 0)
-    return types.ThinkingConfig(thinking_budget=budget)
+    return types.ThinkingConfig(thinking_budget=budget_map.get(thinking_level, 0))
 
 async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir: Path, chat_id: str, thinking_level: str = "none"):
     _, client = rotator.next_client()
@@ -447,15 +459,18 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
                     # streamingをexecutorで実行してイベントループをブロックしない
                     def make_stream():
+                        tc = make_thinking_config(model, thinking_level)
+                        cfg_kwargs = dict(
+                            system_instruction=make_system_prompt(session_dir),
+                            tools=TOOL_DEFS,
+                            temperature=0.7,
+                        )
+                        if tc is not None:
+                            cfg_kwargs["thinking_config"] = tc
                         return try_client.models.generate_content_stream(
                             model=model,
                             contents=messages,
-                            config=types.GenerateContentConfig(
-                                system_instruction=make_system_prompt(session_dir),
-                                tools=TOOL_DEFS,
-                                temperature=0.7,
-                                thinking_config=make_thinking_config(thinking_level),
-                            ),
+                            config=types.GenerateContentConfig(**cfg_kwargs),
                         )
 
                     stream = await loop.run_in_executor(None, make_stream)
@@ -618,6 +633,30 @@ async def websocket_endpoint(ws: WebSocket, chat_id: str):
                     update_chat_title(chat_id, title)
                     await ws.send_json({"type": "title_updated", "title": title})
 
+                history = await run_agent(user_msg, history, ws, session_dir, chat_id, thinking_level=thinking_level)
+
+            elif data["type"] in ("edit", "retry"):
+                # 編集・再試行: truncate_at以降のメッセージを削除してやり直す
+                truncate_at = data.get("truncate_at")  # DBメッセージのインデックス
+                user_msg = data.get("content", "")
+
+                if truncate_at is not None:
+                    # DBとhistoryをそのインデックスで切り詰める
+                    truncate_messages_from(chat_id, truncate_at)
+                    # historyはDB上の user/assistant ペアに対応（toolの内部ターンは含まない）
+                    # truncate_atはUI上のuser messageのインデックスなので、historyも同様に切り詰める
+                    history = history[:truncate_at]
+                    chat["messages"] = chat["messages"][:truncate_at]
+
+                if not user_msg:
+                    # retryで内容変更なし: 最後のuserメッセージを再利用
+                    last_user = next((m for m in reversed(chat["messages"]) if m["role"] == "user"), None)
+                    user_msg = last_user["content"] if last_user else ""
+
+                if not user_msg:
+                    continue
+
+                save_message(chat_id, "user", user_msg)
                 history = await run_agent(user_msg, history, ws, session_dir, chat_id, thinking_level=thinking_level)
 
     except WebSocketDisconnect:
