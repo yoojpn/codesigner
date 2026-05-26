@@ -349,7 +349,9 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
             if part.function_call: tool_calls.append(part.function_call)
 
         if text_parts:
+            import re as _re
             text = "".join(text_parts)
+            text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
             await ws.send_json({"type": "text", "content": text})
 
         if not tool_calls:
