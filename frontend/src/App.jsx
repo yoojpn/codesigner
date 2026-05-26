@@ -1,35 +1,40 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { ChevronRight, ChevronDown, File, Folder, FolderOpen, X, Check, Terminal, Search, RefreshCw, Download, Plus, Trash2, Send, Loader2, AlertTriangle, Globe, Code2, Cpu, Paperclip, AlertCircle } from 'lucide-react'
+import { ChevronRight, ChevronDown, File, Folder, FolderOpen, X, Check, Terminal,
+  Search, RefreshCw, Download, Plus, Trash2, Send, Loader2, AlertTriangle,
+  Globe, Code2, Cpu, Paperclip, MessageSquare, Edit2 } from 'lucide-react'
 import MonacoEditor from '@monaco-editor/react'
 import './App.css'
 
 // ---- WebSocket Hook ----
-function useAgent(wsUrl) {
+function useAgent(chatId) {
   const ws = useRef(null)
   const [connected, setConnected] = useState(false)
   const handlers = useRef({})
 
   const connect = useCallback(() => {
-    if (ws.current?.readyState === WebSocket.OPEN) return
-    const sock = new WebSocket(wsUrl)
+    if (!chatId) return
+    if (ws.current?.readyState === WebSocket.OPEN) ws.current.close()
+    const _backendUrl = (typeof __BACKEND_URL__ !== 'undefined' && __BACKEND_URL__) ? __BACKEND_URL__ : ''
+    const wsProto = _backendUrl ? (_backendUrl.startsWith('https') ? 'wss' : 'ws') : (location.protocol === 'https:' ? 'wss' : 'ws')
+    const wsHost = _backendUrl ? _backendUrl.replace(/^https?:\/\//, '') : location.host
+    const sock = new WebSocket(`${wsProto}://${wsHost}/ws/${chatId}`)
     sock.onopen = () => setConnected(true)
     sock.onclose = () => { setConnected(false); setTimeout(connect, 3000) }
     sock.onerror = () => sock.close()
     sock.onmessage = (e) => {
-      try {
-        const msg = JSON.parse(e.data)
-        handlers.current[msg.type]?.(msg)
-      } catch {}
+      try { const msg = JSON.parse(e.data); handlers.current[msg.type]?.(msg) } catch {}
     }
     ws.current = sock
-  }, [wsUrl])
+  }, [chatId])
 
-  useEffect(() => { connect(); return () => ws.current?.close() }, [connect])
+  useEffect(() => {
+    connect()
+    return () => ws.current?.close()
+  }, [connect])
 
   const send = useCallback((data) => {
     if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify(data))
   }, [])
-
   const on = useCallback((type, fn) => { handlers.current[type] = fn }, [])
 
   return { connected, send, on }
@@ -46,7 +51,6 @@ function getFileIcon(name, isDir, isOpen) {
 
 function FileTree({ files, selected, onSelect, onRefresh, onDownload }) {
   const [expanded, setExpanded] = useState(new Set(['.']))
-  const tree = buildTree(files)
 
   function buildTree(flatList) {
     const root = {}
@@ -62,6 +66,8 @@ function FileTree({ files, selected, onSelect, onRefresh, onDownload }) {
     return root
   }
 
+  const tree = buildTree(files)
+
   function toggle(path) {
     setExpanded(s => { const n = new Set(s); n.has(path) ? n.delete(path) : n.add(path); return n })
   }
@@ -71,8 +77,7 @@ function FileTree({ files, selected, onSelect, onRefresh, onDownload }) {
       .filter(([k]) => k !== '__meta')
       .sort(([, av], [, bv]) => {
         const aDir = av.__meta?.isDir; const bDir = bv.__meta?.isDir
-        if (aDir && !bDir) return -1; if (!aDir && bDir) return 1
-        return 0
+        if (aDir && !bDir) return -1; if (!aDir && bDir) return 1; return 0
       })
       .map(([key, val]) => {
         const meta = val.__meta || { name: key, isDir: false }
@@ -80,17 +85,11 @@ function FileTree({ files, selected, onSelect, onRefresh, onDownload }) {
         const isDir = meta.isDir || Object.keys(val).filter(k => k !== '__meta').length > 0
         const isExp = expanded.has(fullPath)
         const isSelected = selected === fullPath
-
         return (
           <div key={fullPath}>
-            <div
-              className={`tree-item ${isSelected ? 'selected' : ''}`}
-              style={{ paddingLeft: `${depth * 12 + 8}px` }}
-              onClick={() => { isDir ? toggle(fullPath) : onSelect(fullPath) }}
-            >
-              <span className="tree-icon">
-                {isDir ? (isExp ? <ChevronDown size={12} /> : <ChevronRight size={12} />) : null}
-              </span>
+            <div className={`tree-item ${isSelected ? 'selected' : ''}`} style={{ paddingLeft: `${depth * 12 + 8}px` }}
+              onClick={() => { isDir ? toggle(fullPath) : onSelect(fullPath) }}>
+              <span className="tree-icon">{isDir ? (isExp ? <ChevronDown size={12} /> : <ChevronRight size={12} />) : null}</span>
               {getFileIcon(key, isDir, isExp)}
               <span className="tree-label">{key}</span>
               {!isDir && (
@@ -109,15 +108,79 @@ function FileTree({ files, selected, onSelect, onRefresh, onDownload }) {
     <div className="file-tree">
       <div className="panel-header">
         <span>Files</span>
-        <div className="panel-header-actions">
-          <button className="icon-btn" title="Refresh" onClick={onRefresh}><RefreshCw size={12} /></button>
-        </div>
+        <button className="icon-btn" title="Refresh" onClick={onRefresh}><RefreshCw size={12} /></button>
       </div>
       <div className="tree-body">
         {files.length === 0
-          ? <div className="empty-state">No files in workspace</div>
-          : renderNode(tree)
-        }
+          ? <div className="empty-state">No files yet</div>
+          : renderNode(tree)}
+      </div>
+    </div>
+  )
+}
+
+// ---- Chat Sidebar ----
+function ChatSidebar({ chats, activeChatId, onSelect, onCreate, onDelete, onRename }) {
+  const [editingId, setEditingId] = useState(null)
+  const [editValue, setEditValue] = useState('')
+
+  function startEdit(e, chat) {
+    e.stopPropagation()
+    setEditingId(chat.id)
+    setEditValue(chat.title)
+  }
+
+  function commitEdit(id) {
+    if (editValue.trim()) onRename(id, editValue.trim())
+    setEditingId(null)
+  }
+
+  function formatDate(iso) {
+    const d = new Date(iso + 'Z')
+    const now = new Date()
+    const diff = now - d
+    if (diff < 60000) return 'just now'
+    if (diff < 3600000) return `${Math.floor(diff/60000)}m ago`
+    if (diff < 86400000) return `${Math.floor(diff/3600000)}h ago`
+    return d.toLocaleDateString()
+  }
+
+  return (
+    <div className="chat-sidebar">
+      <div className="chat-sidebar-header">
+        <span className="logo-row">
+          <span className="logo-icon">⌘</span>
+          <span className="logo-text">codesigner</span>
+        </span>
+        <button className="new-chat-btn" onClick={onCreate} title="New Chat"><Plus size={14} /></button>
+      </div>
+      <div className="chat-list">
+        {chats.length === 0 && <div className="empty-state" style={{padding:'16px',textAlign:'center'}}>No chats yet</div>}
+        {chats.map(chat => (
+          <div key={chat.id} className={`chat-item ${chat.id === activeChatId ? 'active' : ''}`} onClick={() => onSelect(chat.id)}>
+            <MessageSquare size={13} className="chat-item-icon" />
+            <div className="chat-item-body">
+              {editingId === chat.id ? (
+                <input
+                  className="chat-rename-input"
+                  value={editValue}
+                  autoFocus
+                  onChange={e => setEditValue(e.target.value)}
+                  onBlur={() => commitEdit(chat.id)}
+                  onKeyDown={e => { if (e.key === 'Enter') commitEdit(chat.id); if (e.key === 'Escape') setEditingId(null) }}
+                  onClick={e => e.stopPropagation()}
+                />
+              ) : (
+                <span className="chat-item-title">{chat.title}</span>
+              )}
+              <span className="chat-item-date">{formatDate(chat.updated_at)}</span>
+            </div>
+            <div className="chat-item-actions">
+              <button className="icon-btn" title="Rename" onClick={(e) => startEdit(e, chat)}><Edit2 size={11} /></button>
+              <button className="icon-btn danger" title="Delete" onClick={(e) => { e.stopPropagation(); onDelete(chat.id) }}><Trash2 size={11} /></button>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -125,30 +188,27 @@ function FileTree({ files, selected, onSelect, onRefresh, onDownload }) {
 
 // ---- Output Panel ----
 function OutputPanel({ outputs, onRefresh, onDownload, onDelete }) {
-  function formatSize(bytes) {
-    if (bytes < 1024) return `${bytes}B`
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`
-    return `${(bytes / 1024 / 1024).toFixed(1)}MB`
+  function formatSize(b) {
+    if (b < 1024) return `${b}B`
+    if (b < 1048576) return `${(b/1024).toFixed(1)}KB`
+    return `${(b/1048576).toFixed(1)}MB`
   }
-
   return (
     <div className="output-panel">
       <div className="panel-header">
         <span>Downloads</span>
-        <div className="panel-header-actions">
-          <button className="icon-btn" title="Refresh" onClick={onRefresh}><RefreshCw size={12} /></button>
-        </div>
+        <button className="icon-btn" title="Refresh" onClick={onRefresh}><RefreshCw size={12} /></button>
       </div>
       <div className="output-list">
         {outputs.length === 0
-          ? <div className="empty-outputs">No output files yet</div>
+          ? <div className="empty-outputs">No output files</div>
           : outputs.map(f => (
             <div className="output-item" key={f.name}>
               <span className="output-name" title={f.name}>{f.name}</span>
               <span className="output-size">{formatSize(f.size)}</span>
               <div className="output-actions">
                 <button className="download-btn" onClick={() => onDownload(f.path)}><Download size={11} /> DL</button>
-                <button className="delete-output-btn" title="Delete" onClick={() => onDelete(f.name)}><X size={11} /></button>
+                <button className="delete-output-btn" onClick={() => onDelete(f.name)}><X size={11} /></button>
               </div>
             </div>
           ))
@@ -160,11 +220,9 @@ function OutputPanel({ outputs, onRefresh, onDownload, onDelete }) {
 
 // ---- Tool Views ----
 function DiffView({ diff }) {
-  const lines = diff.split('
-')
   return (
     <div className="diff-view">
-      {lines.map((line, i) => {
+      {diff.split('\n').map((line, i) => {
         const cls = line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : line.startsWith('@@') ? 'hunk' : 'ctx'
         return <div key={i} className={`diff-line ${cls}`}>{line || ' '}</div>
       })}
@@ -173,16 +231,8 @@ function DiffView({ diff }) {
 }
 
 function ToolCallBadge({ tool, args }) {
-  const icons = {
-    web_search: <Globe size={13} />,
-    run_command: <Terminal size={13} />,
-    apply_diff: <Code2 size={13} />,
-    search_files: <Search size={13} />,
-    fetch_url: <Globe size={13} />,
-    copy_to_output: <Download size={13} />,
-  }
+  const icons = { web_search: <Globe size={13} />, run_command: <Terminal size={13} />, apply_diff: <Code2 size={13} />, search_files: <Search size={13} />, fetch_url: <Globe size={13} />, copy_to_output: <Download size={13} /> }
   const icon = icons[tool] || <Code2 size={13} />
-
   let argsDisplay = ''
   if (tool === 'web_search') argsDisplay = `"${args.query}"`
   else if (tool === 'run_command') argsDisplay = `$ ${args.command}`
@@ -190,14 +240,11 @@ function ToolCallBadge({ tool, args }) {
   else if (tool === 'apply_diff') argsDisplay = args.path
   else if (tool === 'copy_to_output') argsDisplay = `${args.path} → output/${args.output_name || args.path?.split('/').pop()}`
   else argsDisplay = JSON.stringify(args, null, 2)
-
   return (
     <div className="tool-badge">
       <span className="tool-badge-icon">{icon}</span>
       <div className="tool-badge-body">
-        <div className="tool-badge-header">
-          <span className="tool-name">{tool}</span>
-        </div>
+        <div className="tool-badge-header"><span className="tool-name">{tool}</span></div>
         <div className="tool-args">{argsDisplay}</div>
         {tool === 'apply_diff' && args.diff && <DiffView diff={args.diff} />}
       </div>
@@ -206,395 +253,362 @@ function ToolCallBadge({ tool, args }) {
 }
 
 function ToolResultView({ tool, result }) {
-  if (result.cancelled) return (
-    <div className="tool-result neutral"><span className="tool-result-content">cancelled</span></div>
-  )
-
-  if (tool === 'web_search') {
-    if (result.error) return <div className="tool-result error"><span className="tool-result-content">{result.error}</span></div>
+  if (!result) return null
+  if (result.cancelled) return <div className="tool-result neutral"><X size={12} /> Cancelled</div>
+  if (result.error) return <div className="tool-result error"><AlertTriangle size={12} /> {result.error}</div>
+  if (tool === 'run_command') {
+    return (
+      <div className="tool-result neutral">
+        <pre className="cmd-output">{result.stdout || result.stderr || '(no output)'}</pre>
+        <span className={`exit-code ${result.exit_code === 0 ? 'ok' : 'fail'}`}>exit {result.exit_code}</span>
+      </div>
+    )
+  }
+  if (tool === 'web_search' && result.results) {
     return (
       <div className="search-results">
-        {(result.results || []).map((r, i) => (
+        {result.results.map((r, i) => (
           <div key={i} className="search-result">
-            {r.title && <div className="search-result-title">{r.title}</div>}
-            {r.url && <div className="search-result-url">{r.url}</div>}
+            <div className="search-result-url">{r.url}</div>
             <div className="search-result-snippet">{r.snippet}</div>
           </div>
         ))}
       </div>
     )
   }
-
-  if (tool === 'run_command') {
-    const hasErr = result.exit_code !== 0
-    return (
-      <div>
-        {(result.stdout || result.stderr) && (
-          <div className={`cmd-output ${hasErr ? 'exit-err' : ''}`}>
-            {result.stdout && <span>{result.stdout}</span>}
-            {result.stderr && <span style={{color: 'var(--red)'}}>{result.stderr}</span>}
-          </div>
-        )}
-        <span className={`exit-code ${hasErr ? 'err' : 'ok'}`}>exit {result.exit_code ?? '?'}</span>
-      </div>
-    )
+  if (tool === 'read_file' && result.content) {
+    return <div className="tool-result neutral"><pre className="cmd-output">{result.content.slice(0, 500)}{result.content.length > 500 ? '\n…' : ''}</pre></div>
   }
-
-  if (tool === 'fetch_url') {
-    if (result.error) return <div className="tool-result error"><span className="tool-result-content">{result.error}</span></div>
-    return (
-      <div className="tool-result neutral">
-        <span className="tool-result-content">{(result.content || '').slice(0, 500)}{(result.content?.length > 500) ? '…' : ''}</span>
-      </div>
-    )
-  }
-
-  if (result.error) return <div className="tool-result error"><span className="tool-result-content">{result.error}</span></div>
-  if (result.success) {
-    const msg = result.output_path
-      ? `✓ Saved to output: ${result.output_path}`
-      : result.path ? `✓ ${result.path}` : '✓ Done'
-    return <div className="tool-result success"><span className="tool-result-content">{msg}</span></div>
-  }
-
-  const preview = JSON.stringify(result).slice(0, 200)
-  return <div className="tool-result neutral"><span className="tool-result-content">{preview}</span></div>
+  if (result.success) return <div className="tool-result success"><Check size={12} /> {result.path || result.output_path || 'Done'}</div>
+  return <div className="tool-result neutral"><pre className="cmd-output">{JSON.stringify(result, null, 2).slice(0, 300)}</pre></div>
 }
 
-function ApprovalRequest({ tool, args, onApprove, onReject }) {
-  let label = tool
-  if (tool === 'run_command') label = `Run: ${args.command}`
-  else if (tool === 'write_file') label = `Write: ${args.path}`
-  else if (tool === 'apply_diff') label = `Edit: ${args.path}`
-  else if (tool === 'delete_file') label = `Delete: ${args.path}`
-
+function ApprovalCard({ msg, onApprove, onReject }) {
   return (
-    <div className="approval-request">
-      <div className="approval-header">
-        <AlertCircle size={14} />
-        <span>Approval Required</span>
-      </div>
-      <div className="approval-tool">{label}</div>
-      {tool === 'apply_diff' && args.diff
-        ? <DiffView diff={args.diff} />
-        : <pre className="approval-args">{JSON.stringify(args, null, 2)}</pre>
-      }
+    <div className="approval-card">
+      <div className="approval-header"><AlertTriangle size={14} /> Approval required</div>
+      <div className="approval-tool">{msg.tool}</div>
+      <div className="approval-reason">{msg.reason}</div>
+      {msg.args?.command && <pre className="approval-command">$ {msg.args.command}</pre>}
+      {msg.args?.path && <div className="approval-path">Path: {msg.args.path}</div>}
       <div className="approval-actions">
         <button className="approve-btn" onClick={onApprove}><Check size={13} /> Allow</button>
-        <button className="reject-btn" onClick={onReject}><X size={13} /> Reject</button>
+        <button className="reject-btn" onClick={onReject}><X size={13} /> Deny</button>
       </div>
     </div>
   )
 }
 
-function MessageBubble({ msg, onApprove, onReject }) {
-  if (msg.type === 'user') return (
-    <div className="message user-msg">
-      <div className="msg-content">
-        {msg.content}
-        {msg.attachments?.length > 0 && (
-          <div className="msg-attachments">
-            {msg.attachments.map((a, i) => (
-              <span key={i} className="attachment-chip"><Paperclip size={10} /> {a.name}</span>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-
-  if (msg.type === 'tool_call') return <ToolCallBadge tool={msg.tool} args={msg.args} />
-  if (msg.type === 'tool_result') return <ToolResultView tool={msg.tool} result={msg.result} />
-  if (msg.type === 'approval') return <ApprovalRequest tool={msg.tool} args={msg.args} onApprove={() => onApprove(msg.callId)} onReject={() => onReject(msg.callId)} />
-
-  if (msg.type === 'text') return (
-    <div className="message agent-msg">
-      <div className="msg-avatar"><Cpu size={13} /></div>
-      <div className="msg-content markdown-text">{msg.content}</div>
-    </div>
-  )
-
-  if (msg.type === 'error') return (
-    <div className="message error-msg">
-      <AlertTriangle size={14} />
-      <span>{msg.content}</span>
-    </div>
-  )
-
-  return null
-}
-
-// ---- Attach Bar ----
-function AttachButton({ onAttach }) {
-  const inputRef = useRef(null)
-
-  const handleFiles = (e) => {
-    Array.from(e.target.files).forEach(file => {
-      const reader = new FileReader()
-      reader.onload = (ev) => {
-        onAttach({ name: file.name, content: ev.target.result, type: file.type })
-      }
-      reader.readAsText(file)
-    })
-    e.target.value = ''
-  }
+// ---- Message Renderer ----
+function MessageList({ messages }) {
+  const bottomRef = useRef(null)
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
   return (
-    <button className="attach-btn" onClick={() => inputRef.current?.click()} title="Attach file">
-      <input ref={inputRef} type="file" multiple style={{display:'none'}} onChange={handleFiles} />
-      <Paperclip size={14} />
-    </button>
+    <div className="messages">
+      {messages.map((msg, i) => {
+        if (msg.type === 'user') return (
+          <div key={i} className="message user-msg">
+            <div className="msg-content">{msg.content}</div>
+          </div>
+        )
+        if (msg.type === 'text') return (
+          <div key={i} className="message agent-msg">
+            <div className="msg-avatar"><Cpu size={12} /></div>
+            <div className="msg-content">{msg.content}</div>
+          </div>
+        )
+        if (msg.type === 'tool_call') return <ToolCallBadge key={i} tool={msg.tool} args={msg.args} />
+        if (msg.type === 'tool_result') return <ToolResultView key={i} tool={msg.tool} result={msg.result} />
+        if (msg.type === 'thinking') return (
+          <div key={i} className="message agent-msg">
+            <div className="msg-avatar"><Cpu size={12} /></div>
+            <div className="thinking"><Loader2 size={13} className="spin" /> thinking…</div>
+          </div>
+        )
+        return null
+      })}
+      <div ref={bottomRef} />
+    </div>
   )
 }
 
 // ---- Main App ----
 export default function App() {
+  const [chats, setChats] = useState([])
+  const [activeChatId, setActiveChatId] = useState(null)
   const [messages, setMessages] = useState([])
-  const [input, setInput] = useState('')
-  const [loading, setLoading] = useState(false)
   const [files, setFiles] = useState([])
   const [outputs, setOutputs] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [input, setInput] = useState('')
+  const [activeTab, setActiveTab] = useState('chat')
   const [selectedFile, setSelectedFile] = useState(null)
   const [fileContent, setFileContent] = useState('')
-  const [activeTab, setActiveTab] = useState('chat')
-  const [attachments, setAttachments] = useState([])
-  const [sessionId, setSessionId] = useState('')
-  const [sessionDir, setSessionDir] = useState('')
+  const [openTabs, setOpenTabs] = useState([])
+  const [pendingApproval, setPendingApproval] = useState(null)
+  const textareaRef = useRef(null)
 
-  const bottomRef = useRef(null)
-  const inputRef = useRef(null)
+  const { connected, send, on } = useAgent(activeChatId)
 
-  const _backendUrl = (typeof __BACKEND_URL__ !== 'undefined' && __BACKEND_URL__) ? __BACKEND_URL__ : ''
-  const _wsProto = _backendUrl ? (_backendUrl.startsWith('https') ? 'wss' : 'ws') : (location.protocol === 'https:' ? 'wss' : 'ws')
-  const _wsHost = _backendUrl ? _backendUrl.replace(/^https?:\/\//, '') : location.host
-  const wsUrl = `${_wsProto}://${_wsHost}/ws`
-  const { connected, send, on } = useAgent(wsUrl)
-
-  const addMessage = useCallback((msg) => {
-    setMessages(m => [...m, { ...msg, id: Date.now() + Math.random() }])
+  // Load chats on mount
+  useEffect(() => {
+    fetch('/api/chats').then(r => r.json()).then(d => {
+      setChats(d.chats || [])
+      if (d.chats?.length > 0) selectChat(d.chats[0].id)
+    })
   }, [])
 
-  const refreshFiles = useCallback(async (sid) => {
-    const id = sid ?? sessionId
+  // WS handlers
+  useEffect(() => {
+    on('ready', (msg) => {
+      const chat = msg.chat
+      // Rebuild message list from DB history
+      const rebuilt = []
+      for (const m of chat.messages) {
+        rebuilt.push({ type: m.role === 'user' ? 'user' : 'text', content: m.content })
+      }
+      setMessages(rebuilt)
+      refreshFiles(chat.id)
+      refreshOutputs(chat.id)
+    })
+    on('text', (msg) => {
+      setMessages(prev => [...prev.filter(m => m.type !== 'thinking'), { type: 'text', content: msg.content }])
+    })
+    on('tool_call', (msg) => {
+      setMessages(prev => [...prev.filter(m => m.type !== 'thinking'), { type: 'tool_call', tool: msg.tool, args: msg.args }])
+    })
+    on('tool_result', (msg) => {
+      setMessages(prev => [...prev, { type: 'tool_result', tool: msg.tool, result: msg.result }])
+      if (msg.tool === 'copy_to_output' && msg.result?.success) refreshOutputs()
+      if (['write_file','apply_diff','delete_file'].includes(msg.tool) && msg.result?.success) refreshFiles()
+    })
+    on('approval_request', (msg) => {
+      setMessages(prev => [...prev.filter(m => m.type !== 'thinking')])
+      setPendingApproval(msg)
+    })
+    on('title_updated', (msg) => {
+      setChats(prev => prev.map(c => c.id === activeChatId ? { ...c, title: msg.title } : c))
+    })
+    on('done', () => {
+      setLoading(false)
+      refreshFiles()
+      refreshOutputs()
+    })
+    on('error', (msg) => {
+      setLoading(false)
+      setMessages(prev => [...prev.filter(m => m.type !== 'thinking'), { type: 'text', content: `Error: ${msg.content}` }])
+    })
+  }, [on, activeChatId])
+
+  const refreshFiles = useCallback(async (cid) => {
+    const id = cid ?? activeChatId
     if (!id) return
     try {
-      const r = await fetch(`/api/files?session_id=${encodeURIComponent(id)}`)
+      const r = await fetch(`/api/files?chat_id=${encodeURIComponent(id)}`)
       const data = await r.json()
       if (data.files) setFiles(data.files)
     } catch {}
-  }, [sessionId])
+  }, [activeChatId])
 
-  const refreshOutputs = useCallback(async (sid) => {
-    const id = sid ?? sessionId
+  const refreshOutputs = useCallback(async (cid) => {
+    const id = cid ?? activeChatId
     if (!id) return
     try {
-      const r = await fetch(`/api/outputs?session_id=${encodeURIComponent(id)}`)
+      const r = await fetch(`/api/outputs?chat_id=${encodeURIComponent(id)}`)
       const data = await r.json()
       if (data.files) setOutputs(data.files)
     } catch {}
-  }, [sessionId])
+  }, [activeChatId])
 
-  useEffect(() => {
-    on('session_init', (msg) => {
-      setSessionId(msg.session_id)
-      setSessionDir(msg.session_dir)
-      refreshFiles(msg.session_id)
-      refreshOutputs(msg.session_id)
-    })
-    on('text', (msg) => addMessage({ type: 'text', content: msg.content }))
-    on('tool_call', (msg) => addMessage({ type: 'tool_call', tool: msg.tool, args: msg.args }))
-    on('tool_result', (msg) => {
-      addMessage({ type: 'tool_result', tool: msg.tool, result: msg.result })
-      if (msg.tool === 'list_files' && msg.result.files) setFiles(msg.result.files)
-      if (msg.tool === 'copy_to_output' && msg.result.success) refreshOutputs()
-    })
-    on('approval_request', (msg) => {
-      const callId = msg.call_id
-      addMessage({ type: 'approval', tool: msg.tool, args: msg.args, callId })
-    })
-    on('done', () => { setLoading(false); refreshFiles(); refreshOutputs() })
-    on('error', (msg) => { addMessage({ type: 'error', content: msg.content }); setLoading(false) })
-  }, [on, addMessage, refreshFiles, refreshOutputs])
+  function selectChat(id) {
+    setActiveChatId(id)
+    setMessages([])
+    setFiles([])
+    setOutputs([])
+    setActiveTab('chat')
+    setSelectedFile(null)
+    setOpenTabs([])
+  }
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
+  async function createChat() {
+    const r = await fetch('/api/chats', { method: 'POST' })
+    const chat = await r.json()
+    setChats(prev => [chat, ...prev])
+    selectChat(chat.id)
+  }
 
-  useEffect(() => {
-    if (connected && sessionId) { refreshFiles(); refreshOutputs() }
-  }, [connected, sessionId, refreshFiles, refreshOutputs])
+  async function deleteChat(id) {
+    if (!confirm('Delete this chat and its workspace?')) return
+    await fetch(`/api/chats/${id}`, { method: 'DELETE' })
+    setChats(prev => prev.filter(c => c.id !== id))
+    if (activeChatId === id) {
+      const remaining = chats.filter(c => c.id !== id)
+      if (remaining.length > 0) selectChat(remaining[0].id)
+      else { setActiveChatId(null); setMessages([]); setFiles([]); setOutputs([]) }
+    }
+  }
+
+  async function renameChat(id, title) {
+    await fetch(`/api/chats/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }) })
+    setChats(prev => prev.map(c => c.id === id ? { ...c, title } : c))
+  }
+
+  const sendMessage = useCallback(() => {
+    const text = input.trim()
+    if (!text || loading || !connected || !activeChatId) return
+    setMessages(prev => [...prev, { type: 'user', content: text }, { type: 'thinking' }])
+    setInput('')
+    setLoading(true)
+    if (textareaRef.current) textareaRef.current.style.height = 'auto'
+    send({ type: 'message', content: text })
+  }, [input, loading, connected, activeChatId, send])
 
   const openFile = useCallback(async (path) => {
     setSelectedFile(path)
     setActiveTab('editor')
+    if (!openTabs.includes(path)) setOpenTabs(prev => [...prev, path])
     try {
-      const r = await fetch(`/api/file?path=${encodeURIComponent(path)}&session_id=${encodeURIComponent(sessionId)}`)
+      const r = await fetch(`/api/file?path=${encodeURIComponent(path)}&chat_id=${encodeURIComponent(activeChatId)}`)
       const data = await r.json()
       setFileContent(data.content || '')
     } catch {}
-  }, [sessionId])
+  }, [activeChatId, openTabs])
 
   const downloadFile = useCallback((path) => {
-    window.open(`/api/download?path=${encodeURIComponent(path)}&session_id=${encodeURIComponent(sessionId)}`)
-  }, [sessionId])
+    window.open(`/api/download?path=${encodeURIComponent(path)}&chat_id=${encodeURIComponent(activeChatId)}`)
+  }, [activeChatId])
 
   const deleteOutput = useCallback(async (name) => {
-    try {
-      await fetch(`/api/outputs/${encodeURIComponent(name)}?session_id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
-      refreshOutputs()
-    } catch {}
-  }, [sessionId, refreshOutputs])
+    await fetch(`/api/outputs/${encodeURIComponent(name)}?chat_id=${encodeURIComponent(activeChatId)}`, { method: 'DELETE' })
+    refreshOutputs()
+  }, [activeChatId, refreshOutputs])
 
-  const submit = useCallback(() => {
-    const text = input.trim()
-    if (!text || loading || !connected) return
+  function handleKeyDown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
+  }
 
-    let fileContext = ''
-    if (attachments.length > 0) {
-      fileContext = attachments.map(a => `=== ${a.name} ===
-${a.content}`).join('
+  function handleInput(e) {
+    setInput(e.target.value)
+    e.target.style.height = 'auto'
+    e.target.style.height = Math.min(e.target.scrollHeight, 180) + 'px'
+  }
 
-')
-    }
+  function handleApproval(approved) {
+    if (!pendingApproval) return
+    send({ type: 'approval', call_id: pendingApproval.call_id, approved })
+    setPendingApproval(null)
+  }
 
-    addMessage({ type: 'user', content: text, attachments })
-    setInput('')
-    setAttachments([])
-    setLoading(true)
-    send({ type: 'message', content: text, file_context: fileContext })
-    inputRef.current?.focus()
-  }, [input, loading, connected, send, addMessage, attachments])
-
-  const handleApprove = useCallback((callId) => {
-    send({ type: 'approval', approved: true, call_id: callId })
-  }, [send])
-
-  const handleReject = useCallback((callId) => {
-    send({ type: 'approval', approved: false, call_id: callId })
-  }, [send])
-
-  const lang = selectedFile ? selectedFile.split('.').pop() : 'plaintext'
-  const monacoLang = { js:'javascript', jsx:'javascript', ts:'typescript', tsx:'typescript', py:'python', md:'markdown', sh:'shell', json:'json', html:'html', css:'css' }[lang] || 'plaintext'
+  const lang = selectedFile ? (selectedFile.endsWith('.py') ? 'python' : selectedFile.endsWith('.js') || selectedFile.endsWith('.jsx') ? 'javascript' : selectedFile.endsWith('.ts') ? 'typescript' : selectedFile.endsWith('.json') ? 'json' : selectedFile.endsWith('.md') ? 'markdown' : selectedFile.endsWith('.css') ? 'css' : selectedFile.endsWith('.html') ? 'html' : selectedFile.endsWith('.sh') ? 'shell' : 'plaintext') : 'plaintext'
 
   return (
     <div className="app">
-      <div className="titlebar">
-        <div className="titlebar-left">
-          <Code2 size={16} className="logo-icon" />
-          <span className="app-name">codesigner</span>
-        </div>
-        <div className="titlebar-center">
-          {selectedFile && activeTab === 'editor' && (
-            <span className="active-file">{selectedFile}</span>
-          )}
-        </div>
-        <div className="titlebar-right">
-          <div className={`status-dot ${connected ? 'online' : 'offline'}`} />
-          <span className="status-text">{connected ? 'connected' : 'reconnecting...'}</span>
-        </div>
+      {/* Chat Sidebar */}
+      <ChatSidebar
+        chats={chats}
+        activeChatId={activeChatId}
+        onSelect={selectChat}
+        onCreate={createChat}
+        onDelete={deleteChat}
+        onRename={renameChat}
+      />
+
+      {/* File Sidebar */}
+      <div className="file-sidebar">
+        <FileTree
+          files={files}
+          selected={selectedFile}
+          onSelect={openFile}
+          onRefresh={() => refreshFiles()}
+          onDownload={downloadFile}
+        />
+        <OutputPanel
+          outputs={outputs}
+          onRefresh={() => refreshOutputs()}
+          onDownload={downloadFile}
+          onDelete={deleteOutput}
+        />
       </div>
 
-      <div className="workspace">
-        <div className="sidebar">
-          <FileTree files={files} selected={selectedFile} onSelect={openFile} onRefresh={refreshFiles} onDownload={downloadFile} />
-          <OutputPanel outputs={outputs} onRefresh={refreshOutputs} onDownload={downloadFile} onDelete={deleteOutput} />
-        </div>
-
-        <div className="main-area">
+      {/* Main */}
+      <div className="main-area">
+        {/* Topbar */}
+        <div className="topbar">
           <div className="tabs">
             <button className={`tab ${activeTab === 'chat' ? 'active' : ''}`} onClick={() => setActiveTab('chat')}>
-              <Cpu size={13} /> Chat
+              <MessageSquare size={13} /> Chat
             </button>
-            {selectedFile && (
-              <button className={`tab ${activeTab === 'editor' ? 'active' : ''}`} onClick={() => setActiveTab('editor')}>
-                <File size={13} /> {selectedFile.split('/').pop()}
-                <button className="tab-action" onClick={(e) => { e.stopPropagation(); downloadFile(selectedFile) }} title="Download"><Download size={11} /></button>
+            {openTabs.map(tab => (
+              <button key={tab} className={`tab ${activeTab === 'editor' && selectedFile === tab ? 'active' : ''}`}
+                onClick={() => { setSelectedFile(tab); setActiveTab('editor') }}>
+                <File size={13} />
+                {tab.split('/').pop()}
+                <span className="tab-close" onClick={(e) => {
+                  e.stopPropagation()
+                  setOpenTabs(prev => prev.filter(t => t !== tab))
+                  if (selectedFile === tab) setActiveTab('chat')
+                }}><X size={11} /></span>
               </button>
+            ))}
+          </div>
+          <div className="topbar-right">
+            <div className={`status-indicator ${connected ? 'connected' : ''}`} />
+            <span className="status-label">{connected ? 'connected' : 'connecting…'}</span>
+          </div>
+        </div>
+
+        {/* Content */}
+        {activeTab === 'chat' ? (
+          <div className="chat-area">
+            {!activeChatId ? (
+              <div className="empty-chat">
+                <span className="empty-icon">⌘</span>
+                <h2>Welcome to Codesigner</h2>
+                <p>Create a new chat to get started</p>
+                <button className="create-chat-btn" onClick={createChat}><Plus size={14} /> New Chat</button>
+              </div>
+            ) : (
+              <>
+                <MessageList messages={messages} />
+                {pendingApproval && (
+                  <div className="approval-overlay">
+                    <ApprovalCard msg={pendingApproval} onApprove={() => handleApproval(true)} onReject={() => handleApproval(false)} />
+                  </div>
+                )}
+                <div className="input-area">
+                  <div className="input-row">
+                    <textarea
+                      ref={textareaRef}
+                      className="chat-input"
+                      value={input}
+                      placeholder="Ask Codesigner… (Enter to send, Shift+Enter for newline)"
+                      rows={1}
+                      onChange={handleInput}
+                      onKeyDown={handleKeyDown}
+                      disabled={loading || !connected}
+                    />
+                    <button className="send-btn" onClick={sendMessage} disabled={!input.trim() || loading || !connected}>
+                      {loading ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
+                    </button>
+                  </div>
+                </div>
+              </>
             )}
           </div>
-
-          {activeTab === 'chat' && (
-            <div className="chat-area">
-              <div className="messages">
-                {messages.length === 0 && (
-                  <div className="welcome">
-                    <Code2 size={32} className="welcome-icon" />
-                    <h2>Codesigner</h2>
-                    <p>AI coding assistant. Ask me to write, edit, or run code.</p>
-                    <div className="suggestions">
-                      {['Create a Python web scraper', 'Set up a Node.js project', 'Write a shell script', 'Search the web for docs'].map(s => (
-                        <button key={s} className="suggestion" onClick={() => { setInput(s); inputRef.current?.focus() }}>{s}</button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {messages.map(msg => (
-                  <MessageBubble key={msg.id} msg={msg} onApprove={handleApprove} onReject={handleReject} />
-                ))}
-                {loading && (
-                  <div className="message agent-msg loading">
-                    <div className="msg-avatar"><Cpu size={13} /></div>
-                    <div className="thinking"><Loader2 size={13} className="spin" /><span>thinking...</span></div>
-                  </div>
-                )}
-                <div ref={bottomRef} />
-              </div>
-
-              <div className="input-area">
-                {attachments.length > 0 && (
-                  <div className="attach-bar">
-                    {attachments.map((a, i) => (
-                      <span key={i} className="attachment-chip">
-                        <Paperclip size={10} />
-                        <span>{a.name}</span>
-                        <button onClick={() => setAttachments(prev => prev.filter((_, idx) => idx !== i))}><X size={10} /></button>
-                      </span>
-                    ))}
-                  </div>
-                )}
-                <div className="input-row">
-                  <AttachButton onAttach={a => setAttachments(prev => [...prev, a])} />
-                  <textarea
-                    ref={inputRef}
-                    className="chat-input"
-                    value={input}
-                    onChange={e => setInput(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit() } }}
-                    placeholder="Ask Codesigner... (Enter to send, Shift+Enter for newline)"
-                    rows={1}
-                    disabled={loading}
-                  />
-                  <button className={`send-btn ${loading ? 'loading' : ''}`} onClick={submit} disabled={loading || !input.trim()}>
-                    {loading ? <Loader2 size={15} className="spin" /> : <Send size={15} />}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'editor' && selectedFile && (
-            <div className="editor-area">
+        ) : (
+          <div className="editor-area">
+            {selectedFile && (
               <MonacoEditor
                 height="100%"
-                language={monacoLang}
+                language={lang}
                 value={fileContent}
                 theme="vs-dark"
-                onChange={v => setFileContent(v)}
-                options={{
-                  fontSize: 13,
-                  fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace",
-                  fontLigatures: true,
-                  minimap: { enabled: false },
-                  scrollBeyondLastLine: false,
-                  wordWrap: 'on',
-                  lineNumbers: 'on',
-                  renderWhitespace: 'none',
-                  smoothScrolling: true,
-                  cursorSmoothCaretAnimation: 'on',
-                  padding: { top: 16, bottom: 16 }
-                }}
+                options={{ readOnly: true, minimap: { enabled: false }, fontSize: 13, scrollBeyondLastLine: false, lineNumbers: 'on' }}
               />
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
