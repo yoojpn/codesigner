@@ -258,7 +258,22 @@ function ToolCallBadge({ tool, args }) {
   if (tool === 'web_search') argsDisplay = `"${args.query}"`
   else if (tool === 'run_command') argsDisplay = `$ ${args.command}`
   else if (tool === 'fetch_url') argsDisplay = args.url
-  else if (tool === 'apply_diff') argsDisplay = args.path
+  else if (tool === 'apply_diff') {
+    const diffLines = (args.diff || '').split('\n')
+    const added = diffLines.filter(l => l.startsWith('+')).length
+    const removed = diffLines.filter(l => l.startsWith('-')).length
+    argsDisplay = (
+      <span>
+        {args.path}
+        {(added > 0 || removed > 0) && (
+          <span className="diff-inline-stats">
+            <span className="diff-stat-add">+{added}</span>
+            <span className="diff-stat-del"> −{removed}</span>
+          </span>
+        )}
+      </span>
+    )
+  }
   else if (tool === 'copy_to_output') argsDisplay = `${args.path} → output/${args.output_name || args.path?.split('/').pop()}`
   else argsDisplay = JSON.stringify(args, null, 2)
   return (
@@ -300,7 +315,32 @@ function ToolResultView({ tool, result }) {
   if (tool === 'read_file' && result.content) {
     return <div className="tool-result neutral"><pre className="cmd-output">{result.content.slice(0, 500)}{result.content.length > 500 ? '\n…' : ''}</pre></div>
   }
-  if (result.success) return <div className="tool-result success"><Check size={12} /> {result.path || result.output_path || 'Done'}</div>
+  if (tool === 'apply_diff' && result.success) {
+    // diffからの+/-行数をカウント
+    const diffLines = (result.diff || '').split('\n')
+    const added = diffLines.filter(l => l.startsWith('+')).length
+    const removed = diffLines.filter(l => l.startsWith('-')).length
+    const filename = result.path?.split('/').pop() || result.path || ''
+    return (
+      <div className="tool-result success diff-result">
+        <span className="diff-result-icon"><Check size={12} /></span>
+        <span className="diff-result-file">{filename}</span>
+        <span className="diff-result-stats">
+          {result.lines != null && <span className="diff-result-lines">{result.lines} lines</span>}
+        </span>
+      </div>
+    )
+  }
+  if (tool === 'write_file' && result.success) {
+    const filename = result.path?.split('/').pop() || result.path || ''
+    return (
+      <div className="tool-result success diff-result">
+        <span className="diff-result-icon"><Check size={12} /></span>
+        <span className="diff-result-file">{filename}</span>
+        <span className="diff-result-badge">written</span>
+      </div>
+    )
+  }
   return <div className="tool-result neutral"><pre className="cmd-output">{JSON.stringify(result, null, 2).slice(0, 300)}</pre></div>
 }
 

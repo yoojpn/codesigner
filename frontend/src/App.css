@@ -224,3 +224,18 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .input-area.drag-over,.input-area:has(+ .drop-overlay){border-color:var(--accent)}
 .attachment-badge{display:inline-flex;align-items:center;gap:4px;background:var(--bg-2);border:1px solid var(--border);border-radius:4px;padding:2px 7px;font-size:11px;color:var(--text-2)}
 .attachments-row{display:flex;flex-wrap:wrap;gap:4px;padding-bottom:6px}
+
+/* diff result */
+.diff-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.diff-result-icon { display: flex; align-items: center; color: var(--success); }
+.diff-result-file { font-family: monospace; font-size: 12px; color: var(--text); font-weight: 600; }
+.diff-result-stats { display: flex; gap: 6px; align-items: center; }
+.diff-result-lines { font-size: 11px; color: var(--text-muted); }
+.diff-result-badge { font-size: 10px; background: var(--surface2); color: var(--text-muted); padding: 1px 6px; border-radius: 4px; }
+
+/* inline diff stats in tool badge */
+.diff-inline-stats { margin-left: 8px; font-size: 11px; }
