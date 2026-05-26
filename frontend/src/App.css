@@ -364,3 +364,27 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
   font-size: 9px;
   opacity: 0.6;
 }
+
+/* ---- Links ---- */
+a {
+  color: #7eb8f7;
+  text-decoration: none;
+}
+a:hover {
+  color: #a8d0fb;
+  text-decoration: underline;
+}
+.markdown-body a {
+  color: #7eb8f7;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown-body a:hover {
+  color: #b8d8fd;
+}
+.search-result-url {
+  color: #6aad6a !important;
+}
+.search-result-url:hover {
+  color: #8fd08f;
+}
