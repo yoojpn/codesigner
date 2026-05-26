@@ -480,7 +480,7 @@ export default function App() {
   }, [activeChatId, openTabs])
 
   const downloadFile = useCallback((path) => {
-    window.open(apiUrl(`/api/download?path=${encodeURIComponent(path)}&chat_id=${encodeURIComponent(activeChatId)}`)
+    window.open(apiUrl(`/api/download?path=${encodeURIComponent(path)}&chat_id=${encodeURIComponent(activeChatId)}`))
   }, [activeChatId])
 
   const deleteOutput = useCallback(async (name) => {
