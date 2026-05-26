@@ -61,6 +61,7 @@ class KeyRotator:
         keys_raw = os.getenv("GEMMA_API_KEYS", "")
         self.keys = [k.strip() for k in keys_raw.split(",") if k.strip()]
         self.index = 0
+        self._clients: dict = {}
 
     def next(self) -> str:
         if not self.keys:
@@ -68,6 +69,15 @@ class KeyRotator:
         key = self.keys[self.index % len(self.keys)]
         self.index += 1
         return key
+
+    def get_client(self, key: str):
+        if key not in self._clients:
+            self._clients[key] = genai.Client(api_key=key)
+        return self._clients[key]
+
+    def next_client(self):
+        key = self.next()
+        return key, self.get_client(key)
 
 rotator = KeyRotator()
 
@@ -343,56 +353,75 @@ def clean_text(text: str) -> str:
 
 # ---- Agent Loop with streaming ----
 async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir: Path, chat_id: str):
-    api_key = rotator.next()
-    client = genai.Client(api_key=api_key)
+    _, client = rotator.next_client()
     messages = history + [types.Content(role="user", parts=[types.Part(text=user_message)])]
+    loop = asyncio.get_event_loop()
 
     for _ in range(20):
-        # Try models with fallback
+        # Try models × keys with fallback
         response = None
         last_err = None
+        tried = set()
         for model in MODELS:
-            try:
-                # Use streaming
-                accumulated_text = ""
-                tool_calls = []
-                candidate_content = None
-
-                stream = client.models.generate_content_stream(
-                    model=model,
-                    contents=messages,
-                    config=types.GenerateContentConfig(
-                        system_instruction=make_system_prompt(session_dir),
-                        tools=TOOL_DEFS,
-                        temperature=0.7,
-                    ),
-                )
-
-                for chunk in stream:
-                    if not chunk.candidates:
-                        continue
-                    candidate = chunk.candidates[0]
-                    candidate_content = candidate.content
-                    for part in candidate.content.parts:
-                        if part.text:
-                            cleaned = clean_text(part.text)
-                            if cleaned:
-                                accumulated_text += cleaned
-                                await ws.send_json({"type": "stream", "content": cleaned})
-                        if part.function_call:
-                            tool_calls.append(part.function_call)
-
-                # Signal end of stream
-                if accumulated_text:
-                    await ws.send_json({"type": "stream_end"})
-
-                response = {"text": accumulated_text, "tool_calls": tool_calls, "content": candidate_content}
-                break
-            except Exception as e:
-                if "503" in str(e) or "UNAVAILABLE" in str(e):
-                    last_err = e
+            for attempt in range(len(rotator.keys)):
+                try_key = rotator.keys[(rotator.index + attempt) % len(rotator.keys)]
+                if (model, try_key) in tried:
                     continue
-                raise
+                tried.add((model, try_key))
+                try_client = rotator.get_client(try_key)
+                try:
+                    accumulated_text = ""
+                    tool_calls = []
+                    candidate_content = None
+
+                    # streamingをexecutorで実行してイベントループをブロックしない
+                    def make_stream():
+                        return try_client.models.generate_content_stream(
+                            model=model,
+                            contents=messages,
+                            config=types.GenerateContentConfig(
+                                system_instruction=make_system_prompt(session_dir),
+                                tools=TOOL_DEFS,
+                                temperature=0.7,
+                            ),
+                        )
+
+                    stream = await loop.run_in_executor(None, make_stream)
+
+                    def consume_chunk(chunk):
+                        # 同期イテレータから1チャンク取得
+                        return chunk
+
+                    for chunk in stream:
+                        if not chunk.candidates:
+                            continue
+                        candidate = chunk.candidates[0]
+                        candidate_content = candidate.content
+                        for part in candidate.content.parts:
+                            if part.text:
+                                cleaned = clean_text(part.text)
+                                if cleaned:
+                                    accumulated_text += cleaned
+                                    await ws.send_json({"type": "stream", "content": cleaned})
+                                    # イベントループに制御を返す（UI更新のため）
+                                    await asyncio.sleep(0)
+                            if part.function_call:
+                                tool_calls.append(part.function_call)
+
+                    if accumulated_text:
+                        await ws.send_json({"type": "stream_end"})
+
+                    response = {"text": accumulated_text, "tool_calls": tool_calls, "content": candidate_content}
+                    # 成功したキーに次回もローテーションを合わせる
+                    rotator.index = rotator.keys.index(try_key) + 1
+                    break
+                except Exception as e:
+                    if "503" in str(e) or "UNAVAILABLE" in str(e) or "429" in str(e):
+                        last_err = e
+                        continue
+                    raise
+            if response is not None:
+                break
 
         if response is None:
             raise last_err
