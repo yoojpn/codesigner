@@ -412,6 +412,17 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 # ---- Agent Loop with streaming ----
+def make_thinking_config(thinking_level: str) -> types.ThinkingConfig:
+    """
+    thinking_level: "none"/"off" → budget=0 (thinking無効)
+                    "auto"       → budget=-1 (動的)
+                    "high"/"on"  → budget=8192 (高思考)
+    SDK 1.14.0は thinking_budget と include_thoughts のみサポート
+    """
+    budget_map = {"none": 0, "off": 0, "auto": -1, "high": 8192, "on": 8192}
+    budget = budget_map.get(thinking_level, 0)
+    return types.ThinkingConfig(thinking_budget=budget)
+
 async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir: Path, chat_id: str, thinking_level: str = "none"):
     _, client = rotator.next_client()
     messages = history + [types.Content(role="user", parts=[types.Part(text=user_message)])]
@@ -443,7 +454,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                                 system_instruction=make_system_prompt(session_dir),
                                 tools=TOOL_DEFS,
                                 temperature=0.7,
-                                thinking_config=types.ThinkingConfig(thinking_level=thinking_level),
+                                thinking_config=make_thinking_config(thinking_level),
                             ),
                         )
 
