@@ -206,6 +206,17 @@ def tool_apply_diff(path, diff, *, session_dir):
     t, e = _guard(path, session_dir)
     if e: return {"error": e}
     original = t.read_text(errors="replace") if t.exists() else ""
+
+    # 重複適用チェック: diffのハッシュをファイルごとに記録
+    import hashlib
+    diff_hash = hashlib.md5(diff.encode()).hexdigest()
+    marker_dir = session_dir / ".diff_applied"
+    marker_dir.mkdir(exist_ok=True)
+    marker = marker_dir / f"{t.name}_{diff_hash}"
+    if marker.exists():
+        return {"error": "already_applied", "message": "This diff has already been applied. Do not apply again."}
+    marker.touch()
+
     try:
         new_lines = list(original.splitlines(keepends=True))
         lines = diff.splitlines(keepends=True)
@@ -232,8 +243,9 @@ def tool_apply_diff(path, diff, *, session_dir):
         result_text = "".join(new_lines)
         t.write_text(result_text)
         lines_changed = abs(len(new_lines) - len(original.splitlines(keepends=True)))
-        return {"success": True, "path": path, "lines": len(new_lines), "preview": result_text[:500]}
+        return {"success": True, "path": path, "lines": len(new_lines), "lines_changed": lines_changed, "preview": result_text[:500]}
     except Exception as ex:
+        marker.unlink(missing_ok=True)  # 失敗したらマーカー削除
         return {"error": str(ex)}
 
 def tool_run_command(command, cwd=".", *, session_dir):
@@ -580,6 +592,14 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
             ))
 
         messages.append(types.Content(role="user", parts=tool_response_parts))
+
+        # apply_diff / write_file が成功したらループ終了（重複適用防止）
+        wrote = [fc for fc in tool_calls if fc.name in ("apply_diff", "write_file")]
+        if wrote:
+            if text:
+                save_message(chat_id, "assistant", text)
+            await ws.send_json({"type": "done"})
+            return messages
 
     await ws.send_json({"type": "done"})
     return messages
