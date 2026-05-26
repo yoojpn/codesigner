@@ -332,6 +332,7 @@ function DiffView({ diff }) {
 }
 
 function ToolCallBadge({ tool, args }) {
+  const [diffExpanded, setDiffExpanded] = useState(false)
   const icons = { web_search: <Globe size={13} />, run_command: <Terminal size={13} />, apply_diff: <Code2 size={13} />, search_files: <Search size={13} />, fetch_url: <Globe size={13} />, copy_to_output: <Download size={13} /> }
   const icon = icons[tool] || <Code2 size={13} />
   let argsDisplay = ''
@@ -343,13 +344,18 @@ function ToolCallBadge({ tool, args }) {
     const added = diffLines.filter(l => l.startsWith('+')).length
     const removed = diffLines.filter(l => l.startsWith('-')).length
     argsDisplay = (
-      <span>
-        {args.path}
+      <span style={{display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap'}}>
+        <span>{args.path}</span>
         {(added > 0 || removed > 0) && (
-          <span className="diff-inline-stats">
+          <button
+            className="diff-toggle-btn"
+            onClick={e => { e.stopPropagation(); setDiffExpanded(v => !v) }}
+            title="diff内容を表示/非表示"
+          >
             <span className="diff-stat-add">+{added}</span>
             <span className="diff-stat-del"> −{removed}</span>
-          </span>
+            <span className="diff-toggle-chevron">{diffExpanded ? '▲' : '▼'}</span>
+          </button>
         )}
       </span>
     )
@@ -362,7 +368,7 @@ function ToolCallBadge({ tool, args }) {
       <div className="tool-badge-body">
         <div className="tool-badge-header"><span className="tool-name">{tool}</span></div>
         <div className="tool-args">{argsDisplay}</div>
-        {tool === 'apply_diff' && args.diff && <DiffView diff={args.diff} />}
+        {tool === 'apply_diff' && args.diff && diffExpanded && <DiffView diff={args.diff} />}
       </div>
     </div>
   )
@@ -709,6 +715,13 @@ export default function App() {
         refreshOutputs()
         const fname = msg.result.output_path?.split('/').pop() || ''
         if (fname) setPendingOutputFiles(prev => [...prev, { name: fname, path: msg.result.output_path }])
+      }
+      // write_file / apply_diff で output_copied があればダウンロード可能に
+      if (['write_file','apply_diff'].includes(msg.tool) && msg.result?.output_copied) {
+        refreshOutputs()
+        const outPath = msg.result.output_copied
+        const fname = outPath.split('/').pop()
+        if (fname) setPendingOutputFiles(prev => [...prev, { name: fname, path: outPath }])
       }
       if (['write_file','apply_diff','delete_file'].includes(msg.tool) && msg.result?.success) refreshFiles()
     })

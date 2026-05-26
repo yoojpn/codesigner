@@ -556,15 +556,15 @@ RULES:
 - Prefer SEARCH/REPLACE for small targeted edits; unified diff for multi-hunk changes.
 - NEVER output file contents in chat. ALWAYS call write_file tool directly.
 - If apply_diff returns an error, immediately retry with a corrected diff that fixes the specific error. Keep retrying until success.
-- After ALL intended edits are applied successfully, output a brief summary ending with "✅ 完了" (or "✅ Done" in English).
-- If you have more edits to do, do NOT say "完了" — just continue calling tools.
-- After apply_diff or write_file succeeds, do NOT read_file to verify — trust the result and report done.
-- read_file before editing existing files
+- CRITICAL: When you have multiple files to edit, edit ALL of them before writing your final response. Do NOT stop after editing just one file. Keep calling apply_diff/write_file for every file that needs changes.
+- Only AFTER all edits are done, write a short summary of what was changed. This summary signals you are finished.
+- After apply_diff or write_file succeeds, do NOT read_file to verify — trust the result.
+- read_file before editing existing files.
 - User-uploaded files are saved to the `input/` folder. When the user mentions a file, check `input/` first.
-- run_command to execute, test, install packages
-- web_search + fetch_url for docs/packages
-- copy_to_output to make files downloadable
-- Be concise. Show what changed. Explain steps briefly.
+- run_command to execute, test, install packages.
+- web_search + fetch_url for docs/packages.
+- copy_to_output to make a specific file downloadable by the user.
+- Be concise. List what files were changed and what changed in each.
 """
 
 def auto_title(message: str) -> str:
@@ -712,6 +712,18 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     continue
 
             result = await dispatch_tool(name, args, session_dir)
+
+            # write_file / apply_diff 成功時: output/ へ自動コピー
+            if result.get("success") and name in ("write_file", "apply_diff"):
+                file_path = args.get("path", "")
+                if file_path and not file_path.startswith("output/"):
+                    src = session_dir / file_path
+                    if src.exists() and src.is_file():
+                        out_dir = session_dir / "output"
+                        out_dir.mkdir(exist_ok=True)
+                        dest = out_dir / src.name
+                        shutil.copy2(src, dest)
+                        result["output_copied"] = f"output/{src.name}"
             # tool_resultをDBに保存
             save_message(chat_id, "tool", json.dumps({"tool": name, "result": result}), msg_type="tool_result")
             await ws.send_json({"type": "tool_result", "tool": name, "result": result})
@@ -733,20 +745,19 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
         # diff失敗が多すぎる場合は終了
         if diff_fail_count >= MAX_DIFF_RETRIES:
-            save_message(chat_id, "assistant", "diff適用を3回試みましたが失敗しました。ファイルの内容を確認して別のアプローチを検討してください。")
-            await ws.send_json({"type": "stream", "content": "diff適用を3回試みましたが失敗しました。ファイルの内容を確認して別のアプローチを検討してください。"})
+            msg = "diff適用を3回試みましたが失敗しました。ファイルの内容を確認して別のアプローチを検討してください。"
+            save_message(chat_id, "assistant", msg)
+            await ws.send_json({"type": "stream", "content": msg})
             await ws.send_json({"type": "stream_end"})
             break
 
-        # diff失敗の場合はAIに再試行させる（ループ継続）
+        # diff失敗の場合はAIに再試行させる（ループ継続、テキストは破棄）
         if has_diff_error:
+            # ストリームで既に出ていたテキストはそのまま表示、ループ継続
             continue
 
-        # テキストに"✅"または"完了"が含まれていたら終了
-        if text and ("✅" in text or ("完了" in text and not tool_calls)):
-            if text:
-                save_message(chat_id, "assistant", text)
-            break
+        # ツール呼び出しがあった場合は継続（AIはまだ作業中）
+        # → ループを続けてAIに次の行動をさせる
 
     await ws.send_json({"type": "done"})
     return messages

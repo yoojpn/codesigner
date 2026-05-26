@@ -342,3 +342,25 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ---- Diff Toggle Button ---- */
+.diff-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 4px;
+  padding: 1px 6px;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text-muted, #aaa);
+  transition: background 0.15s;
+}
+.diff-toggle-btn:hover {
+  background: rgba(255,255,255,0.12);
+}
+.diff-toggle-chevron {
+  font-size: 9px;
+  opacity: 0.6;
+}
