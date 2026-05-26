@@ -329,7 +329,7 @@ def auto_title(message: str) -> str:
     title = " ".join(words)
     return title[:50] + ("…" if len(title) > 50 else "")
 
-MODELS = ["gemma-4-31b-it", "gemma-4-26b-it"]
+MODELS = ["gemma-4-31b-it", "gemma-4-26b-a4b-it"]
 
 def generate_with_fallback(client, messages, system_prompt):
     last_err = None
