@@ -3,7 +3,7 @@ import { ChevronRight, ChevronDown, File, Folder, FolderOpen, X, Check, Terminal
   Search, RefreshCw, Download, Plus, Trash2, Send, Loader2, AlertTriangle,
   Globe, Code2, Cpu, Paperclip, MessageSquare, Edit2, Copy } from 'lucide-react'
 import MonacoEditor from '@monaco-editor/react'
-import ReactMarkdown from 'react-markdown'
+import Streamdown from 'streamdown'
 import './App.css'
 
 // ---- Backend URL ----
@@ -225,12 +225,28 @@ function OutputPanel({ outputs, onRefresh, onDownload, onDelete }) {
 
 // ---- Tool Views ----
 function DiffView({ diff }) {
+  const lines = diff.split('\n')
+  const added = lines.filter(l => l.startsWith('+')).length
+  const removed = lines.filter(l => l.startsWith('-')).length
+  const total = added + removed || 1
+  const addSegs = Math.round((added / total) * 10)
   return (
-    <div className="diff-view">
-      {diff.split('\n').map((line, i) => {
-        const cls = line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : line.startsWith('@@') ? 'hunk' : 'ctx'
-        return <div key={i} className={`diff-line ${cls}`}>{line || ' '}</div>
-      })}
+    <div className="diff-wrap">
+      <div className="diff-stats">
+        <span className="diff-stat-add">+{added}</span>
+        <span className="diff-stat-del">−{removed}</span>
+        <span className="diff-stat-bar">
+          {Array.from({ length: 10 }).map((_, i) => (
+            <span key={i} className={`diff-stat-seg ${i < addSegs ? 'add' : 'del'}`} />
+          ))}
+        </span>
+      </div>
+      <div className="diff-view">
+        {lines.map((line, i) => {
+          const cls = line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : line.startsWith('@@') ? 'hunk' : 'ctx'
+          return <div key={i} className={`diff-line ${cls}`}>{line || ' '}</div>
+        })}
+      </div>
     </div>
   )
 }
@@ -305,12 +321,29 @@ function ApprovalCard({ msg, onApprove, onReject }) {
 }
 
 // ---- Message Renderer ----
-function MessageList({ messages, onRetry }) {
+function MessageList({ messages, onRetry, onEditSend }) {
   const bottomRef = useRef(null)
+  const [editingIdx, setEditingIdx] = useState(null)
+  const [editValue, setEditValue] = useState('')
+  const [copiedIdx, setCopiedIdx] = useState(null)
+
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
-  function copyText(text) {
-    navigator.clipboard.writeText(text).catch(() => {})
+  function copyText(text, idx) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedIdx(idx)
+      setTimeout(() => setCopiedIdx(null), 1500)
+    }).catch(() => {})
+  }
+
+  function startEdit(i, content) {
+    setEditingIdx(i)
+    setEditValue(content)
+  }
+
+  function commitEdit(i) {
+    if (editValue.trim()) onEditSend(editValue.trim())
+    setEditingIdx(null)
   }
 
   return (
@@ -318,8 +351,31 @@ function MessageList({ messages, onRetry }) {
       {messages.map((msg, i) => {
         if (msg.type === 'user') return (
           <div key={i} className="message user-msg">
-            <div className="msg-content">{msg.content}</div>
-            <button className="msg-copy-btn" title="Copy" onClick={() => copyText(msg.content)}><Copy size={11} /></button>
+            <div className="user-msg-wrap">
+              {editingIdx === i ? (
+                <div className="user-edit-wrap">
+                  <textarea
+                    className="user-edit-input"
+                    value={editValue}
+                    autoFocus
+                    onChange={e => setEditValue(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitEdit(i) } if (e.key === 'Escape') setEditingIdx(null) }}
+                  />
+                  <div className="user-edit-actions">
+                    <button className="edit-save-btn" onClick={() => commitEdit(i)}><Check size={11} /> 送信</button>
+                    <button className="edit-cancel-btn" onClick={() => setEditingIdx(null)}><X size={11} /> キャンセル</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="msg-content">{msg.content}</div>
+              )}
+              <div className="user-msg-actions">
+                <button className="msg-action-btn" title="編集" onClick={() => startEdit(i, msg.content)}><Edit2 size={12} /></button>
+                <button className={`msg-action-btn ${copiedIdx === i ? 'copied' : ''}`} title="コピー" onClick={() => copyText(msg.content, i)}>
+                  {copiedIdx === i ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
+            </div>
           </div>
         )
         if (msg.type === 'text' || msg.type === 'streaming') return (
@@ -327,13 +383,13 @@ function MessageList({ messages, onRetry }) {
             <div className="msg-avatar"><Cpu size={12} /></div>
             <div className="msg-body">
               <div className="msg-content markdown-body">
-                <ReactMarkdown>{msg.content}</ReactMarkdown>
+                <Streamdown streaming={msg.type === 'streaming'}>{msg.content}</Streamdown>
               </div>
-              {msg.type === 'text' && (
-                <div className="msg-actions">
-                  <button className="msg-copy-btn" title="Copy" onClick={() => copyText(msg.content)}><Copy size={11} /></button>
-                </div>
-              )}
+              <div className="agent-msg-actions">
+                <button className={`msg-action-btn ${copiedIdx === i ? 'copied' : ''}`} title="コピー" onClick={() => copyText(msg.content, i)}>
+                  {copiedIdx === i ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
             </div>
           </div>
         )
@@ -342,7 +398,7 @@ function MessageList({ messages, onRetry }) {
             <div className="msg-avatar"><AlertTriangle size={12} /></div>
             <div className="msg-body">
               <div className="msg-content error-msg">Error: {msg.content}</div>
-              <div className="msg-actions">
+              <div className="agent-msg-actions">
                 <button className="retry-btn" onClick={onRetry}><RefreshCw size={11} /> 再試行</button>
               </div>
             </div>
@@ -649,7 +705,7 @@ export default function App() {
               </div>
             ) : (
               <>
-                <MessageList messages={messages} onRetry={() => sendMessage(lastUserMsg)} />
+                <MessageList messages={messages} onRetry={() => sendMessage(lastUserMsg)} onEditSend={(text) => sendMessage(text)} />
                 {pendingApproval && (
                   <div className="approval-overlay">
                     <ApprovalCard msg={pendingApproval} onApprove={() => handleApproval(true)} onReject={() => handleApproval(false)} />
