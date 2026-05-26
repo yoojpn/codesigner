@@ -368,8 +368,18 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
         if text_parts:
             import re as _re
             text = "".join(text_parts)
-            text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
-            await ws.send_json({"type": "text", "content": text})
+            # Gemma 4の各種thinkingタグを除去
+            text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL)
+            text = _re.sub(r"<thought>.*?</thought>", "", text, flags=_re.DOTALL)
+            text = _re.sub(r"<\|channel>thought.*?<channel\|>", "", text, flags=_re.DOTALL)
+            # "The user said ..." のようなメタコメントを除去
+            text = _re.sub(r"^The user said.*?
+", "", text, flags=_re.MULTILINE)
+            text = _re.sub(r"^I should.*?
+", "", text, flags=_re.MULTILINE)
+            text = text.strip()
+            if text:
+                await ws.send_json({"type": "text", "content": text})
 
         if not tool_calls:
             messages.append(candidate.content)
@@ -448,6 +458,7 @@ async def websocket_endpoint(ws: WebSocket, chat_id: str):
             if data["type"] == "message":
                 user_msg = data["content"]
                 save_message(chat_id, "user", user_msg)
+                user_msg = "<thought off>" + user_msg  # suppress Gemma thinking
 
                 # Auto-title after first message
                 if len(chat["messages"]) == 0:
