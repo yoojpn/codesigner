@@ -3,7 +3,8 @@ import { ChevronRight, ChevronDown, File, Folder, FolderOpen, X, Check, Terminal
   Search, RefreshCw, Download, Plus, Trash2, Send, Loader2, AlertTriangle,
   Globe, Code2, Cpu, Paperclip, MessageSquare, Edit2, Copy } from 'lucide-react'
 import MonacoEditor from '@monaco-editor/react'
-import Streamdown from 'streamdown'
+import { Streamdown } from 'streamdown'
+import 'streamdown/styles.css'
 import './App.css'
 
 // ---- Backend URL ----
@@ -383,7 +384,7 @@ function MessageList({ messages, onRetry, onEditSend }) {
             <div className="msg-avatar"><Cpu size={12} /></div>
             <div className="msg-body">
               <div className="msg-content markdown-body">
-                <Streamdown streaming={msg.type === 'streaming'}>{msg.content}</Streamdown>
+                <Streamdown mode={msg.type === 'streaming' ? 'streaming' : 'static'}>{msg.content}</Streamdown>
               </div>
               <div className="agent-msg-actions">
                 <button className={`msg-action-btn ${copiedIdx === i ? 'copied' : ''}`} title="コピー" onClick={() => copyText(msg.content, i)}>
