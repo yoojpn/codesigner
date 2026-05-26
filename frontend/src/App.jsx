@@ -5,6 +5,10 @@ import { ChevronRight, ChevronDown, File, Folder, FolderOpen, X, Check, Terminal
 import MonacoEditor from '@monaco-editor/react'
 import './App.css'
 
+// ---- Backend URL ----
+const BACKEND_URL = (typeof __BACKEND_URL__ !== 'undefined' && __BACKEND_URL__) ? __BACKEND_URL__.replace(/\/$/, '') : ''
+const apiUrl = (path) => `${BACKEND_URL}${path}`
+
 // ---- WebSocket Hook ----
 function useAgent(chatId) {
   const ws = useRef(null)
@@ -14,7 +18,7 @@ function useAgent(chatId) {
   const connect = useCallback(() => {
     if (!chatId) return
     if (ws.current?.readyState === WebSocket.OPEN) ws.current.close()
-    const _backendUrl = (typeof __BACKEND_URL__ !== 'undefined' && __BACKEND_URL__) ? __BACKEND_URL__ : ''
+    const _backendUrl = BACKEND_URL
     const wsProto = _backendUrl ? (_backendUrl.startsWith('https') ? 'wss' : 'ws') : (location.protocol === 'https:' ? 'wss' : 'ws')
     const wsHost = _backendUrl ? _backendUrl.replace(/^https?:\/\//, '') : location.host
     const sock = new WebSocket(`${wsProto}://${wsHost}/ws/${chatId}`)
@@ -353,7 +357,7 @@ export default function App() {
 
   // Load chats on mount
   useEffect(() => {
-    fetch('/api/chats').then(r => r.json()).then(d => {
+    fetch(apiUrl('/api/chats')).then(r => r.json()).then(d => {
       setChats(d.chats || [])
       if (d.chats?.length > 0) selectChat(d.chats[0].id)
     })
@@ -405,7 +409,7 @@ export default function App() {
     const id = cid ?? activeChatId
     if (!id) return
     try {
-      const r = await fetch(`/api/files?chat_id=${encodeURIComponent(id)}`)
+      const r = await fetch(apiUrl(`/api/files?chat_id=${encodeURIComponent(id)}`))
       const data = await r.json()
       if (data.files) setFiles(data.files)
     } catch {}
@@ -415,7 +419,7 @@ export default function App() {
     const id = cid ?? activeChatId
     if (!id) return
     try {
-      const r = await fetch(`/api/outputs?chat_id=${encodeURIComponent(id)}`)
+      const r = await fetch(apiUrl(`/api/outputs?chat_id=${encodeURIComponent(id)}`))
       const data = await r.json()
       if (data.files) setOutputs(data.files)
     } catch {}
@@ -432,7 +436,7 @@ export default function App() {
   }
 
   async function createChat() {
-    const r = await fetch('/api/chats', { method: 'POST' })
+    const r = await fetch(apiUrl('/api/chats'), { method: 'POST' })
     const chat = await r.json()
     setChats(prev => [chat, ...prev])
     selectChat(chat.id)
@@ -440,7 +444,7 @@ export default function App() {
 
   async function deleteChat(id) {
     if (!confirm('Delete this chat and its workspace?')) return
-    await fetch(`/api/chats/${id}`, { method: 'DELETE' })
+    await fetch(apiUrl(`/api/chats/${id}`), { method: 'DELETE' })
     setChats(prev => prev.filter(c => c.id !== id))
     if (activeChatId === id) {
       const remaining = chats.filter(c => c.id !== id)
@@ -450,7 +454,7 @@ export default function App() {
   }
 
   async function renameChat(id, title) {
-    await fetch(`/api/chats/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }) })
+    await fetch(apiUrl(`/api/chats/${id}`), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }) })
     setChats(prev => prev.map(c => c.id === id ? { ...c, title } : c))
   }
 
@@ -469,18 +473,18 @@ export default function App() {
     setActiveTab('editor')
     if (!openTabs.includes(path)) setOpenTabs(prev => [...prev, path])
     try {
-      const r = await fetch(`/api/file?path=${encodeURIComponent(path)}&chat_id=${encodeURIComponent(activeChatId)}`)
+      const r = await fetch(apiUrl(`/api/file?path=${encodeURIComponent(path)}&chat_id=${encodeURIComponent(activeChatId)}`))
       const data = await r.json()
       setFileContent(data.content || '')
     } catch {}
   }, [activeChatId, openTabs])
 
   const downloadFile = useCallback((path) => {
-    window.open(`/api/download?path=${encodeURIComponent(path)}&chat_id=${encodeURIComponent(activeChatId)}`)
+    window.open(apiUrl(`/api/download?path=${encodeURIComponent(path)}&chat_id=${encodeURIComponent(activeChatId)}`)
   }, [activeChatId])
 
   const deleteOutput = useCallback(async (name) => {
-    await fetch(`/api/outputs/${encodeURIComponent(name)}?chat_id=${encodeURIComponent(activeChatId)}`, { method: 'DELETE' })
+    await fetch(apiUrl(`/api/outputs/${encodeURIComponent(name)}?chat_id=${encodeURIComponent(activeChatId)}`), { method: 'DELETE' })
     refreshOutputs()
   }, [activeChatId, refreshOutputs])
 
