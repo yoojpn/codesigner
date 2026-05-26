@@ -350,7 +350,7 @@ async def dispatch_tool(name, args, session_dir):
         "read_file":      lambda: tool_read_file(**kw),
         "write_file":     lambda: tool_write_file(**kw),
         "apply_diff":     lambda: tool_apply_diff(**kw),
-        "run_command":    lambda: tool_run_command(**kw),
+        "run_command":    lambda: tool_run_command(command=args.get("command",""), cwd=args.get("cwd","."), session_dir=session_dir),
         "delete_file":    lambda: tool_delete_file(**kw),
         "search_files":   lambda: tool_search_files(**kw),
         "copy_to_output": lambda: tool_copy_to_output(**kw),
@@ -412,6 +412,7 @@ RULES:
 - If the user writes in Japanese, your ENTIRE response must be in Japanese (except code).
 - NEVER output diff text in chat. ALWAYS call the apply_diff tool directly — no exceptions.
 - NEVER output file contents in chat. ALWAYS call write_file tool directly.
+- NEVER say "修正が完了しました" or "以下のdiffを適用します" without actually calling the tool first.
 - After apply_diff or write_file succeeds, do NOT read_file to verify — trust the result and report done.
 - read_file before editing existing files
 - User-uploaded files are saved to the `input/` folder. When the user mentions a file, check `input/` first.
