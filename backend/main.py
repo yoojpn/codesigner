@@ -329,6 +329,28 @@ def auto_title(message: str) -> str:
     title = " ".join(words)
     return title[:50] + ("…" if len(title) > 50 else "")
 
+MODELS = ["gemma-4-31b-it", "gemma-4-26b-it"]
+
+def generate_with_fallback(client, messages, system_prompt):
+    last_err = None
+    for model in MODELS:
+        try:
+            return client.models.generate_content(
+                model=model,
+                contents=messages,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    tools=TOOL_DEFS,
+                    temperature=0.7,
+                ),
+            )
+        except Exception as e:
+            if "503" in str(e) or "UNAVAILABLE" in str(e):
+                last_err = e
+                continue
+            raise
+    raise last_err
+
 # ---- Agent Loop ----
 async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir: Path, chat_id: str):
     api_key = rotator.next()
@@ -336,15 +358,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
     messages = history + [types.Content(role="user", parts=[types.Part(text=user_message)])]
 
     for _ in range(20):
-        response = client.models.generate_content(
-            model="gemma-4-31b-it",
-            contents=messages,
-            config=types.GenerateContentConfig(
-                system_instruction=make_system_prompt(session_dir),
-                tools=TOOL_DEFS,
-                temperature=0.7,
-            ),
-        )
+        response = generate_with_fallback(client, messages, make_system_prompt(session_dir))
         candidate = response.candidates[0]
         text_parts, tool_calls = [], []
         for part in candidate.content.parts:
