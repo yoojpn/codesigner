@@ -274,6 +274,21 @@ async def tool_fetch_url(url, **_):
     except Exception as ex:
         return {"error": str(ex)}
 
+def sanitize_result(result):
+    """ツール結果をJSON安全な形式に変換する"""
+    if not isinstance(result, dict):
+        return {"output": str(result)}
+    out = {}
+    for k, v in result.items():
+        if isinstance(v, str):
+            # 制御文字を除去（ただし改行・タブは保持）
+            v = re.sub(r'[--]', '', v)
+            # 長すぎる出力は切り詰める
+            if len(v) > 10000:
+                v = v[:10000] + "\n...(truncated)"
+        out[k] = v
+    return out
+
 async def dispatch_tool(name, args, session_dir):
     kw = {**args, "session_dir": session_dir}
     fns = {
@@ -455,20 +470,20 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                         result = {"cancelled": True}
                         await ws.send_json({"type": "tool_result", "tool": name, "result": result})
                         tool_response_parts.append(types.Part(
-                            function_response=types.FunctionResponse(name=name, response={"result": json.dumps(result)})
+                            function_response=types.FunctionResponse(name=name, response=sanitize_result(result))
                         ))
                         continue
                 except asyncio.TimeoutError:
                     result = {"error": "approval timeout"}
                     tool_response_parts.append(types.Part(
-                        function_response=types.FunctionResponse(name=name, response={"result": json.dumps(result)})
+                        function_response=types.FunctionResponse(name=name, response=sanitize_result(result))
                     ))
                     continue
 
             result = await dispatch_tool(name, args, session_dir)
             await ws.send_json({"type": "tool_result", "tool": name, "result": result})
             tool_response_parts.append(types.Part(
-                function_response=types.FunctionResponse(name=name, response={"result": json.dumps(result, ensure_ascii=False)})
+                function_response=types.FunctionResponse(name=name, response=sanitize_result(result))
             ))
 
         messages.append(types.Content(role="user", parts=tool_response_parts))
