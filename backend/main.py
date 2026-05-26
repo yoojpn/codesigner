@@ -359,11 +359,45 @@ def auto_title(message: str) -> str:
 MODELS = ["gemma-4-31b-it", "gemma-4-26b-a4b-it"]
 
 def clean_text(text: str) -> str:
+    # タグで囲まれたthinking除去
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     text = re.sub(r"<thought>.*?</thought>", "", text, flags=re.DOTALL)
     text = re.sub(r"<[|]channel>thought.*?<channel[|]>", "", text, flags=re.DOTALL)
-    text = re.sub(r"(?m)^The user said.*$", "", text)
+
+    # 行ベースでthinkingブロックを除去
+    # 「The user ...」から始まる英語メタコメントブロックを、日本語/実返答が出るまでスキップ
+    lines = text.split("\n")
+    result_lines = []
+    skip_mode = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # thinkingブロック開始の検出
+        if re.match(r"^The user (is|said|mentioned|asked|wants|has|seems|shared|just)", stripped):
+            skip_mode = True
+
+        if skip_mode:
+            # 日本語文字が含まれていたら、そこから実返答
+            if re.search(r"[\u3000-\u9fff\uff00-\uffef]", stripped):
+                m = re.search(r"[\u3000-\u9fff\uff00-\uffef]", line)
+                if m:
+                    result_lines.append(line[m.start():])
+                skip_mode = False
+                continue
+            # 英語のメタコメント行はスキップ（箇条書き・空行含む）
+            continue
+        else:
+            result_lines.append(line)
+
+    text = "\n".join(result_lines)
+
+    # 残った1行系パターン
     text = re.sub(r"(?m)^I should.*$", "", text)
+    text = re.sub(r"(?m)^I need to.*$", "", text)
+    text = re.sub(r"(?m)^\(Internal check:.*?\).*$", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
     return text.strip()
 
 # ---- Agent Loop with streaming ----
