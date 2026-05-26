@@ -357,9 +357,18 @@ export default function App() {
 
   // Load chats on mount
   useEffect(() => {
-    fetch(apiUrl('/api/chats')).then(r => r.json()).then(d => {
-      setChats(d.chats || [])
-      if (d.chats?.length > 0) selectChat(d.chats[0].id)
+    fetch(apiUrl('/api/chats')).then(r => r.json()).then(async d => {
+      const chats = d.chats || []
+      if (chats.length > 0) {
+        setChats(chats)
+        selectChat(chats[0].id)
+      } else {
+        // 初回：チャットを自動作成
+        const r = await fetch(apiUrl('/api/chats'), { method: 'POST' })
+        const chat = await r.json()
+        setChats([chat])
+        selectChat(chat.id)
+      }
     })
   }, [])
 
