@@ -316,17 +316,16 @@ function ToolResultView({ tool, result }) {
     return <div className="tool-result neutral"><pre className="cmd-output">{result.content.slice(0, 500)}{result.content.length > 500 ? '\n…' : ''}</pre></div>
   }
   if (tool === 'apply_diff' && result.success) {
-    // diffからの+/-行数をカウント
-    const diffLines = (result.diff || '').split('\n')
-    const added = diffLines.filter(l => l.startsWith('+')).length
-    const removed = diffLines.filter(l => l.startsWith('-')).length
     const filename = result.path?.split('/').pop() || result.path || ''
+    const added = result.lines_changed ?? 0
+    const removed = result.lines_removed ?? 0
     return (
       <div className="tool-result success diff-result">
         <span className="diff-result-icon"><Check size={12} /></span>
         <span className="diff-result-file">{filename}</span>
         <span className="diff-result-stats">
-          {result.lines != null && <span className="diff-result-lines">{result.lines} lines</span>}
+          {added > 0 && <span className="diff-stat-add">+{added}</span>}
+          {removed > 0 && <span className="diff-stat-del"> −{removed}</span>}
         </span>
       </div>
     )

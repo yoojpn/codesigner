@@ -242,8 +242,10 @@ def tool_apply_diff(path, diff, *, session_dir):
         t.parent.mkdir(parents=True, exist_ok=True)
         result_text = "".join(new_lines)
         t.write_text(result_text)
-        lines_changed = abs(len(new_lines) - len(original.splitlines(keepends=True)))
-        return {"success": True, "path": path, "lines": len(new_lines), "lines_changed": lines_changed, "preview": result_text[:500]}
+        orig_lines = original.splitlines(keepends=True)
+        lines_added = max(0, len(new_lines) - len(orig_lines))
+        lines_removed = max(0, len(orig_lines) - len(new_lines))
+        return {"success": True, "path": path, "lines": len(new_lines), "lines_changed": lines_added, "lines_removed": lines_removed, "preview": result_text[:500]}
     except Exception as ex:
         marker.unlink(missing_ok=True)  # 失敗したらマーカー削除
         return {"error": str(ex)}
