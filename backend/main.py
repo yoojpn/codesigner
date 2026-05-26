@@ -368,15 +368,11 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
         if text_parts:
             import re as _re
             text = "".join(text_parts)
-            # Gemma 4の各種thinkingタグを除去
             text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL)
             text = _re.sub(r"<thought>.*?</thought>", "", text, flags=_re.DOTALL)
-            text = _re.sub(r"<\|channel>thought.*?<channel\|>", "", text, flags=_re.DOTALL)
-            # "The user said ..." のようなメタコメントを除去
-            text = _re.sub(r"^The user said.*?
-", "", text, flags=_re.MULTILINE)
-            text = _re.sub(r"^I should.*?
-", "", text, flags=_re.MULTILINE)
+            text = _re.sub(r"<[|]channel>thought.*?<channel[|]>", "", text, flags=_re.DOTALL)
+            text = _re.sub(r"(?m)^The user said.*$", "", text)
+            text = _re.sub(r"(?m)^I should.*$", "", text)
             text = text.strip()
             if text:
                 await ws.send_json({"type": "text", "content": text})
