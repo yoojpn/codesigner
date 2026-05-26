@@ -376,15 +376,17 @@ def make_system_prompt(session_dir: Path, thinking_on: bool = False) -> str:
 Session working directory: /workspace/{rel}
 All file operations are relative to this directory.
 
+RULES:
+- Your response must begin IMMEDIATELY with the answer. No preamble, no meta-commentary.
+- NEVER output lines like "User said:", "The user wrote:", "* User said:", "I should", "Role:", "Constraint:", "Language:" or any analysis of the conversation context.
+- NEVER translate or repeat the user's message back to them.
+- If the user writes in Japanese, your ENTIRE response must be in Japanese (except code).
 - apply_diff for targeted edits; write_file for new/full-rewrite files
 - read_file before editing existing files
 - run_command to execute, test, install packages
 - web_search + fetch_url for docs/packages
 - copy_to_output to make files downloadable
 - Be concise. Show what changed. Explain steps briefly.
-- CRITICAL: Never start your response with English meta-commentary like "The user said...", "I should...", or translations. Output ONLY the direct response.
-- Do NOT translate or repeat back what the user said. Just respond.
-- Respond in the same language the user uses. If the user writes in Japanese, reply in Japanese only.
 """
 
 def auto_title(message: str) -> str:
@@ -396,34 +398,47 @@ def auto_title(message: str) -> str:
 
 MODELS = ["gemma-4-31b-it", "gemma-4-26b-a4b-it"]
 
-# デリミタ外に漏れるGemmaのメタコメント冒頭パターン
-# "The user said X (Y in Japanese). I should ..." のような前置きを除去
+# メタコメント行の検出パターン
+_META_LINE_RE = re.compile(
+    r"^[\*\-]?\s*("
+    r"User said[:\s]|The user (said|wrote|asked|is|just)|"
+    r"I should|I will|I need to|"
+    r"Role:|Constraint:|Language:|Content:|Context:|Note:|"
+    r"Responding|Let me think|Here(?:\'s| is) my"
+    r")",
+    re.IGNORECASE
+)
+
+def is_meta_line(line: str) -> bool:
+    return bool(_META_LINE_RE.match(line.strip()))
+
 def clean_text(text: str) -> str:
-    """Gemma4公式デリミタのthinking除去 + デリミタ外メタコメント前置き除去"""
+    """
+    Gemma4公式デリミタのthinking除去。
+    さらに冒頭の連続するメタコメント行ブロックを除去する。
+    メタコメントブロックの終わりは「空行の後に非メタ行が来た時」。
+    コード・日本語・実返答の本文は一切触らない。
+    """
     # 公式デリミタによるthinking除去
     text = re.sub(r"<\|channel>thought.*?<channel\|>", "", text, flags=re.DOTALL)
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
 
-    # デリミタ外に漏れた英語メタコメント前置きを行ベースで除去
-    # "The user said..." / "I should..." 等から始まり日本語が出るまでスキップ
-    result = []
-    skip = False
-    for line in text.split("\n"):
-        stripped = line.strip()
-        if not skip and re.match(
-            r"^(The user (said|asked|wrote|is|just|shared)|I should|I will|I need to|Let me|Responding|Note:)",
-            stripped, re.IGNORECASE
-        ):
-            skip = True
-        if skip:
-            jp = re.search(r"[\u3041-\u9fff\uff00-\uffef]", line)
-            if jp:
-                result.append(line[jp.start():])
-                skip = False
-        else:
-            result.append(line)
+    lines = text.split("\n")
 
-    text = "\n".join(result)
+    # 冒頭のメタコメントブロックをスキップ
+    # 「メタ行または空行だけが続いている間は冒頭ブロック」と判断
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if not stripped:          # 空行はスキップ続行
+            i += 1
+            continue
+        if is_meta_line(lines[i]):  # メタ行はスキップ
+            i += 1
+            continue
+        break  # 非メタ・非空行が来たらここから出力
+
+    text = "\n".join(lines[i:])
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
