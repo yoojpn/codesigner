@@ -274,20 +274,31 @@ async def tool_fetch_url(url, **_):
     except Exception as ex:
         return {"error": str(ex)}
 
+def to_json_safe(obj):
+    """任意のオブジェクトをJSON安全なdict/list/strに変換"""
+    if obj is None or isinstance(obj, (bool, int, float)):
+        return obj
+    if isinstance(obj, str):
+        # 制御文字除去（改行・タブは保持）
+        cleaned = re.sub(r'[--]', '', obj)
+        return cleaned[:10000] + "...(truncated)" if len(cleaned) > 10000 else cleaned
+    if isinstance(obj, dict):
+        return {str(k): to_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [to_json_safe(i) for i in obj]
+    # MapComposite等のProtobuf型も含め、dictに変換を試みる
+    try:
+        return to_json_safe(dict(obj))
+    except Exception:
+        pass
+    try:
+        return str(obj)
+    except Exception:
+        return ""
+
 def sanitize_result(result):
-    """ツール結果をJSON安全な形式に変換する"""
-    if not isinstance(result, dict):
-        return {"output": str(result)}
-    out = {}
-    for k, v in result.items():
-        if isinstance(v, str):
-            # 制御文字を除去（ただし改行・タブは保持）
-            v = re.sub(r'[--]', '', v)
-            # 長すぎる出力は切り詰める
-            if len(v) > 10000:
-                v = v[:10000] + "\n...(truncated)"
-        out[k] = v
-    return out
+    return to_json_safe(result) if isinstance(result, dict) else {"output": to_json_safe(result)}
+
 
 async def dispatch_tool(name, args, session_dir):
     kw = {**args, "session_dir": session_dir}
@@ -492,14 +503,18 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
         for fc in tool_calls:
             name, args = fc.name, dict(fc.args)
-            await ws.send_json({"type": "tool_call", "tool": name, "args": args})
+            await ws.send_json({"type": "tool_call", "tool": name, "args": to_json_safe(args)})
 
             required, reason = needs_approval(name, args, session_dir)
             if required:
                 call_id = str(id(fc))
                 await ws.send_json({"type": "approval_request", "tool": name, "args": args, "call_id": call_id, "reason": reason})
                 try:
-                    msg = await asyncio.wait_for(ws.receive_json(), timeout=120)
+                    raw = await asyncio.wait_for(ws.receive_text(), timeout=120)
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        msg = {}
                     if not (msg.get("type") == "approval" and msg.get("approved")):
                         result = {"cancelled": True}
                         await ws.send_json({"type": "tool_result", "tool": name, "result": result})
@@ -552,7 +567,11 @@ async def websocket_endpoint(ws: WebSocket, chat_id: str):
 
     try:
         while True:
-            data = await ws.receive_json()
+            raw = await ws.receive_text()
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
             if data["type"] == "message":
                 user_msg = data["content"]
                 save_message(chat_id, "user", user_msg)
