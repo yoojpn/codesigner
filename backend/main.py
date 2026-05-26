@@ -219,32 +219,79 @@ def tool_apply_diff(path, diff, *, session_dir):
 
     try:
         new_lines = list(original.splitlines(keepends=True))
-        lines = diff.splitlines(keepends=True)
-        i = 0; offset = 0
-        while i < len(lines):
-            line = lines[i]
+        diff_lines = diff.splitlines(keepends=True)
+
+        # hunkを分割
+        hunks = []
+        i = 0
+        while i < len(diff_lines):
+            line = diff_lines[i]
             if line.startswith("@@"):
-                m = re.search(r"-(\d+)(?:,\d+)? \+(\d+)", line)
-                if m:
-                    src_start = int(m.group(1)) - 1 + offset
-                    i += 1; j = src_start
-                    while i < len(lines) and not lines[i].startswith("@@"):
-                        l = lines[i]
-                        if l.startswith("-"):
-                            if j < len(new_lines): del new_lines[j]; offset -= 1
-                        elif l.startswith("+"):
-                            new_lines.insert(j, l[1:]); j += 1; offset += 1
-                        else:
-                            j += 1
-                        i += 1
+                m = re.search(r"-(\d+)(?:,\d+)?", line)
+                hint = int(m.group(1)) - 1 if m else 0
+                hunk_body = []
+                i += 1
+                while i < len(diff_lines) and not diff_lines[i].startswith("@@"):
+                    hunk_body.append(diff_lines[i])
+                    i += 1
+                hunks.append((hint, hunk_body))
             else:
                 i += 1
+
+        if not hunks:
+            return {"error": "No hunks found in diff"}
+
+        offset = 0
+        for hint, hunk_body in hunks:
+            # コンテキスト行（先頭・末尾の変更なし行）を抽出して検索キーに使う
+            ctx_lines = [l[1:] if l.startswith((" ", "\t")) else l
+                         for l in hunk_body
+                         if not l.startswith("+") and not l.startswith("-")]
+            ctx_stripped = [l.rstrip("\n\r") for l in ctx_lines]
+
+            # 削除対象行を抽出
+            del_lines = [l[1:].rstrip("\n\r") if l.startswith("-") else None for l in hunk_body]
+
+            # ヒント付近を中心にコンテキスト行でマッチング位置を探す
+            search_start = max(0, hint + offset - 10)
+            search_end = min(len(new_lines), hint + offset + len(hunk_body) + 20)
+            best_pos = None
+
+            if ctx_stripped:
+                # コンテキスト行がある場合：先頭コンテキスト行でマッチ位置を特定
+                first_ctx = next((c for c in ctx_stripped if c.strip()), None)
+                if first_ctx is not None:
+                    candidates = []
+                    for li in range(search_start, search_end):
+                        if li < len(new_lines) and new_lines[li].rstrip("\n\r") == first_ctx:
+                            candidates.append(li)
+                    # 複数候補はhintに最も近いものを選択
+                    if candidates:
+                        best_pos = min(candidates, key=lambda x: abs(x - (hint + offset)))
+
+            # コンテキスト行がない or マッチしなかった場合はヒントを使用
+            if best_pos is None:
+                best_pos = hint + offset
+
+            # hunkを適用
+            j = best_pos
+            for l in hunk_body:
+                if l.startswith("-"):
+                    if j < len(new_lines):
+                        del new_lines[j]
+                        offset -= 1
+                elif l.startswith("+"):
+                    new_lines.insert(j, l[1:] if not l[1:].endswith("\n") else l[1:])
+                    j += 1
+                    offset += 1
+                else:
+                    j += 1
+
         t.parent.mkdir(parents=True, exist_ok=True)
         result_text = "".join(new_lines)
         t.write_text(result_text)
-        diff_lines = diff.splitlines()
-        lines_added = sum(1 for l in diff_lines if l.startswith("+") and not l.startswith("+++"))
-        lines_removed = sum(1 for l in diff_lines if l.startswith("-") and not l.startswith("---"))
+        lines_added = sum(1 for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
+        lines_removed = sum(1 for l in diff.splitlines() if l.startswith("-") and not l.startswith("---"))
         return {"success": True, "path": path, "lines": len(new_lines), "lines_changed": lines_added, "lines_removed": lines_removed, "preview": result_text[:500]}
     except Exception as ex:
         marker.unlink(missing_ok=True)  # 失敗したらマーカー削除
