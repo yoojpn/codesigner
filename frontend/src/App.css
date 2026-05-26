@@ -239,3 +239,17 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 
 /* inline diff stats in tool badge */
 .diff-inline-stats { margin-left: 8px; font-size: 11px; }
+
+/* Output file cards (auto-attached to agent messages) */
+.output-file-cards { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.output-file-card {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: 8px; padding: 8px 14px;
+  font-size: 12px; color: var(--text); font-weight: 500;
+  text-decoration: none; cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.output-file-card:hover { background: var(--surface2); border-color: var(--accent); color: var(--accent); }
+.output-file-card-icon { flex-shrink: 0; color: var(--accent); }
+.output-file-card-name { font-family: monospace; }

@@ -340,6 +340,16 @@ function ToolResultView({ tool, result }) {
       </div>
     )
   }
+  if (tool === 'copy_to_output' && result.success) {
+    const filename = result.output_path?.split('/').pop() || result.output_path || ''
+    return (
+      <div className="tool-result success diff-result">
+        <span className="diff-result-icon"><Check size={12} /></span>
+        <span className="diff-result-file">{filename}</span>
+        <span className="diff-result-badge">output保存済み</span>
+      </div>
+    )
+  }
   return <div className="tool-result neutral"><pre className="cmd-output">{JSON.stringify(result, null, 2).slice(0, 300)}</pre></div>
 }
 
@@ -450,6 +460,28 @@ function MessageList({ messages, onRetry, onEditSend }) {
           </div>
         )
         if (msg.type === 'tool_result') return <ToolResultView key={i} tool={msg.tool} result={msg.result} />
+        if (msg.type === 'output_files') return (
+          <div key={i} className="message agent-msg">
+            <div className="msg-avatar"><Cpu size={12} /></div>
+            <div className="msg-body">
+              <div className="output-file-cards">
+                {msg.files.map((f, fi) => (
+                  <a
+                    key={fi}
+                    className="output-file-card"
+                    href={apiUrl(`/api/download?path=${encodeURIComponent(f.path)}&chat_id=${encodeURIComponent(activeChatId)}`)}
+                    download={f.name}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <Download size={14} className="output-file-card-icon" />
+                    <span className="output-file-card-name">{f.name}</span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          </div>
+        )
         if (msg.type === 'thinking') return (
           <div key={i} className="message agent-msg">
             <div className="msg-avatar"><Cpu size={12} /></div>
@@ -481,6 +513,7 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false)
   const [lastUserMsg, setLastUserMsg] = useState('')
   const [thinkingLevel, setThinkingLevel] = useState('none')
+  const [pendingOutputFiles, setPendingOutputFiles] = useState([])
   const textareaRef = useRef(null)
 
   const { connected, send, on } = useAgent(activeChatId)
@@ -553,7 +586,11 @@ export default function App() {
     })
     on('tool_result', (msg) => {
       setMessages(prev => [...prev, { type: 'tool_result', tool: msg.tool, result: msg.result }])
-      if (msg.tool === 'copy_to_output' && msg.result?.success) refreshOutputs()
+      if (msg.tool === 'copy_to_output' && msg.result?.success) {
+        refreshOutputs()
+        const fname = msg.result.output_path?.split('/').pop() || ''
+        if (fname) setPendingOutputFiles(prev => [...prev, { name: fname, path: msg.result.output_path }])
+      }
       if (['write_file','apply_diff','delete_file'].includes(msg.tool) && msg.result?.success) refreshFiles()
     })
     on('approval_request', (msg) => {
@@ -567,6 +604,12 @@ export default function App() {
       setLoading(false)
       refreshFiles()
       refreshOutputs()
+      setPendingOutputFiles(prev => {
+        if (prev.length > 0) {
+          setMessages(msgs => [...msgs, { type: 'output_files', files: prev }])
+        }
+        return []
+      })
     })
     on('error', (msg) => {
       setLoading(false)
@@ -602,6 +645,7 @@ export default function App() {
     setActiveTab('chat')
     setSelectedFile(null)
     setOpenTabs([])
+    setPendingOutputFiles([])
   }
 
   async function createChat() {
