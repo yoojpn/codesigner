@@ -314,8 +314,31 @@ def to_json_safe(obj):
     except Exception:
         return ""
 
-def sanitize_result(result):
-    return to_json_safe(result) if isinstance(result, dict) else {"output": to_json_safe(result)}
+def sanitize_result(result, max_len=100000):
+    def _safe(obj):
+        if obj is None or isinstance(obj, (bool, int, float)):
+            return obj
+        if isinstance(obj, str):
+            try:
+                cleaned = obj.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+            except Exception:
+                cleaned = repr(obj)
+            cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', cleaned)
+            return cleaned[:max_len] + "...(truncated)" if len(cleaned) > max_len else cleaned
+        if isinstance(obj, dict):
+            return {str(k): _safe(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [_safe(i) for i in obj]
+        try:
+            return _safe(dict(obj))
+        except Exception:
+            pass
+        try:
+            return str(obj)
+        except Exception:
+            return ""
+    r = _safe(result) if isinstance(result, dict) else {"output": _safe(result)}
+    return r
 
 
 async def dispatch_tool(name, args, session_dir):
@@ -546,8 +569,9 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
             result = await dispatch_tool(name, args, session_dir)
             await ws.send_json({"type": "tool_result", "tool": name, "result": result})
+            max_len = 500000 if name == "read_file" else 100000
             tool_response_parts.append(types.Part(
-                function_response=types.FunctionResponse(name=name, response=sanitize_result(result))
+                function_response=types.FunctionResponse(name=name, response=sanitize_result(result, max_len=max_len))
             ))
 
         messages.append(types.Content(role="user", parts=tool_response_parts))
