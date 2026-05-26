@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { ChevronRight, ChevronDown, File, Folder, FolderOpen, X, Check, Terminal,
   Search, RefreshCw, Download, Plus, Trash2, Send, Loader2, AlertTriangle,
-  Globe, Code2, Cpu, Paperclip, MessageSquare, Edit2 } from 'lucide-react'
+  Globe, Code2, Cpu, Paperclip, MessageSquare, Edit2, Copy } from 'lucide-react'
 import MonacoEditor from '@monaco-editor/react'
+import ReactMarkdown from 'react-markdown'
 import './App.css'
 
 // ---- Backend URL ----
@@ -304,9 +305,13 @@ function ApprovalCard({ msg, onApprove, onReject }) {
 }
 
 // ---- Message Renderer ----
-function MessageList({ messages }) {
+function MessageList({ messages, onRetry }) {
   const bottomRef = useRef(null)
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
+
+  function copyText(text) {
+    navigator.clipboard.writeText(text).catch(() => {})
+  }
 
   return (
     <div className="messages">
@@ -314,12 +319,33 @@ function MessageList({ messages }) {
         if (msg.type === 'user') return (
           <div key={i} className="message user-msg">
             <div className="msg-content">{msg.content}</div>
+            <button className="msg-copy-btn" title="Copy" onClick={() => copyText(msg.content)}><Copy size={11} /></button>
           </div>
         )
-        if (msg.type === 'text') return (
+        if (msg.type === 'text' || msg.type === 'streaming') return (
           <div key={i} className="message agent-msg">
             <div className="msg-avatar"><Cpu size={12} /></div>
-            <div className="msg-content">{msg.content}</div>
+            <div className="msg-body">
+              <div className="msg-content markdown-body">
+                <ReactMarkdown>{msg.content}</ReactMarkdown>
+              </div>
+              {msg.type === 'text' && (
+                <div className="msg-actions">
+                  <button className="msg-copy-btn" title="Copy" onClick={() => copyText(msg.content)}><Copy size={11} /></button>
+                </div>
+              )}
+            </div>
+          </div>
+        )
+        if (msg.type === 'error') return (
+          <div key={i} className="message agent-msg">
+            <div className="msg-avatar"><AlertTriangle size={12} /></div>
+            <div className="msg-body">
+              <div className="msg-content error-msg">Error: {msg.content}</div>
+              <div className="msg-actions">
+                <button className="retry-btn" onClick={onRetry}><RefreshCw size={11} /> 再試行</button>
+              </div>
+            </div>
           </div>
         )
         if (msg.type === 'tool_call') return <ToolCallBadge key={i} tool={msg.tool} args={msg.args} />
@@ -351,6 +377,9 @@ export default function App() {
   const [fileContent, setFileContent] = useState('')
   const [openTabs, setOpenTabs] = useState([])
   const [pendingApproval, setPendingApproval] = useState(null)
+  const [attachments, setAttachments] = useState([])
+  const [isDragging, setIsDragging] = useState(false)
+  const [lastUserMsg, setLastUserMsg] = useState('')
   const textareaRef = useRef(null)
 
   const { connected, send, on } = useAgent(activeChatId)
@@ -385,8 +414,26 @@ export default function App() {
       refreshFiles(chat.id)
       refreshOutputs(chat.id)
     })
+    on('stream', (msg) => {
+      setMessages(prev => {
+        const last = prev[prev.length - 1]
+        if (last && last.type === 'streaming') {
+          return [...prev.slice(0, -1), { ...last, content: last.content + msg.content }]
+        }
+        return [...prev.filter(m => m.type !== 'thinking'), { type: 'streaming', content: msg.content }]
+      })
+    })
+    on('stream_end', () => {
+      setMessages(prev => {
+        const last = prev[prev.length - 1]
+        if (last && last.type === 'streaming') {
+          return [...prev.slice(0, -1), { type: 'text', content: last.content }]
+        }
+        return prev
+      })
+    })
     on('text', (msg) => {
-      setMessages(prev => [...prev.filter(m => m.type !== 'thinking'), { type: 'text', content: msg.content }])
+      setMessages(prev => [...prev.filter(m => m.type !== 'thinking' && m.type !== 'streaming'), { type: 'text', content: msg.content }])
     })
     on('tool_call', (msg) => {
       setMessages(prev => [...prev.filter(m => m.type !== 'thinking'), { type: 'tool_call', tool: msg.tool, args: msg.args }])
@@ -410,7 +457,7 @@ export default function App() {
     })
     on('error', (msg) => {
       setLoading(false)
-      setMessages(prev => [...prev.filter(m => m.type !== 'thinking'), { type: 'text', content: `Error: ${msg.content}` }])
+      setMessages(prev => [...prev.filter(m => m.type !== 'thinking' && m.type !== 'streaming'), { type: 'error', content: msg.content }])
     })
   }, [on, activeChatId])
 
@@ -467,11 +514,13 @@ export default function App() {
     setChats(prev => prev.map(c => c.id === id ? { ...c, title } : c))
   }
 
-  const sendMessage = useCallback(() => {
-    const text = input.trim()
+  const sendMessage = useCallback((overrideText) => {
+    const text = (overrideText ?? input).trim()
     if (!text || loading || !connected || !activeChatId) return
+    setLastUserMsg(text)
     setMessages(prev => [...prev, { type: 'user', content: text }, { type: 'thinking' }])
     setInput('')
+    setAttachments([])
     setLoading(true)
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     send({ type: 'message', content: text })
@@ -505,6 +554,23 @@ export default function App() {
     setInput(e.target.value)
     e.target.style.height = 'auto'
     e.target.style.height = Math.min(e.target.scrollHeight, 180) + 'px'
+  }
+
+  function handleDragOver(e) { e.preventDefault(); setIsDragging(true) }
+  function handleDragLeave() { setIsDragging(false) }
+  async function handleDrop(e) {
+    e.preventDefault(); setIsDragging(false)
+    const files = Array.from(e.dataTransfer.files)
+    for (const file of files) {
+      const fd = new FormData()
+      fd.append('file', file)
+      fd.append('chat_id', activeChatId)
+      try {
+        await fetch(apiUrl('/api/upload'), { method: 'POST', body: fd })
+        setAttachments(prev => [...prev, file.name])
+        refreshFiles()
+      } catch {}
+    }
   }
 
   function handleApproval(approved) {
@@ -583,13 +649,21 @@ export default function App() {
               </div>
             ) : (
               <>
-                <MessageList messages={messages} />
+                <MessageList messages={messages} onRetry={() => sendMessage(lastUserMsg)} />
                 {pendingApproval && (
                   <div className="approval-overlay">
                     <ApprovalCard msg={pendingApproval} onApprove={() => handleApproval(true)} onReject={() => handleApproval(false)} />
                   </div>
                 )}
-                <div className="input-area">
+                <div className={`input-area ${isDragging ? 'drag-over' : ''}`}
+                  onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
+                  {attachments.length > 0 && (
+                    <div className="attachments-row">
+                      {attachments.map(f => (
+                        <span key={f} className="attachment-badge"><Paperclip size={10} /> {f}</span>
+                      ))}
+                    </div>
+                  )}
                   <div className="input-row">
                     <textarea
                       ref={textareaRef}

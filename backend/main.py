@@ -325,66 +325,91 @@ All file operations are relative to this directory.
 """
 
 def auto_title(message: str) -> str:
-    words = message.strip().split()[:8]
+    # Remove <thought off> prefix if present
+    msg = message.replace("<thought off>", "").strip()
+    words = msg.strip().split()[:8]
     title = " ".join(words)
     return title[:50] + ("…" if len(title) > 50 else "")
 
 MODELS = ["gemma-4-31b-it", "gemma-4-26b-a4b-it"]
 
-def generate_with_fallback(client, messages, system_prompt):
-    last_err = None
-    for model in MODELS:
-        try:
-            return client.models.generate_content(
-                model=model,
-                contents=messages,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    tools=TOOL_DEFS,
-                    temperature=0.7,
-                ),
-            )
-        except Exception as e:
-            if "503" in str(e) or "UNAVAILABLE" in str(e):
-                last_err = e
-                continue
-            raise
-    raise last_err
+def clean_text(text: str) -> str:
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<thought>.*?</thought>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<[|]channel>thought.*?<channel[|]>", "", text, flags=re.DOTALL)
+    text = re.sub(r"(?m)^The user said.*$", "", text)
+    text = re.sub(r"(?m)^I should.*$", "", text)
+    return text.strip()
 
-# ---- Agent Loop ----
+# ---- Agent Loop with streaming ----
 async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir: Path, chat_id: str):
     api_key = rotator.next()
     client = genai.Client(api_key=api_key)
     messages = history + [types.Content(role="user", parts=[types.Part(text=user_message)])]
 
     for _ in range(20):
-        response = generate_with_fallback(client, messages, make_system_prompt(session_dir))
-        candidate = response.candidates[0]
-        text_parts, tool_calls = [], []
-        for part in candidate.content.parts:
-            if part.text: text_parts.append(part.text)
-            if part.function_call: tool_calls.append(part.function_call)
+        # Try models with fallback
+        response = None
+        last_err = None
+        for model in MODELS:
+            try:
+                # Use streaming
+                accumulated_text = ""
+                tool_calls = []
+                candidate_content = None
 
-        if text_parts:
-            import re as _re
-            text = "".join(text_parts)
-            text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL)
-            text = _re.sub(r"<thought>.*?</thought>", "", text, flags=_re.DOTALL)
-            text = _re.sub(r"<[|]channel>thought.*?<channel[|]>", "", text, flags=_re.DOTALL)
-            text = _re.sub(r"(?m)^The user said.*$", "", text)
-            text = _re.sub(r"(?m)^I should.*$", "", text)
-            text = text.strip()
-            if text:
-                await ws.send_json({"type": "text", "content": text})
+                stream = client.models.generate_content_stream(
+                    model=model,
+                    contents=messages,
+                    config=types.GenerateContentConfig(
+                        system_instruction=make_system_prompt(session_dir),
+                        tools=TOOL_DEFS,
+                        temperature=0.7,
+                    ),
+                )
+
+                for chunk in stream:
+                    if not chunk.candidates:
+                        continue
+                    candidate = chunk.candidates[0]
+                    candidate_content = candidate.content
+                    for part in candidate.content.parts:
+                        if part.text:
+                            cleaned = clean_text(part.text)
+                            if cleaned:
+                                accumulated_text += cleaned
+                                await ws.send_json({"type": "stream", "content": cleaned})
+                        if part.function_call:
+                            tool_calls.append(part.function_call)
+
+                # Signal end of stream
+                if accumulated_text:
+                    await ws.send_json({"type": "stream_end"})
+
+                response = {"text": accumulated_text, "tool_calls": tool_calls, "content": candidate_content}
+                break
+            except Exception as e:
+                if "503" in str(e) or "UNAVAILABLE" in str(e):
+                    last_err = e
+                    continue
+                raise
+
+        if response is None:
+            raise last_err
+
+        text = response["text"]
+        tool_calls = response["tool_calls"]
+        candidate_content = response["content"]
 
         if not tool_calls:
-            messages.append(candidate.content)
-            # Save assistant message
-            if text_parts:
-                save_message(chat_id, "assistant", "".join(text_parts))
+            if candidate_content:
+                messages.append(candidate_content)
+            if text:
+                save_message(chat_id, "assistant", text)
             break
 
-        messages.append(candidate.content)
+        if candidate_content:
+            messages.append(candidate_content)
         tool_response_parts = []
 
         for fc in tool_calls:
@@ -436,7 +461,6 @@ async def websocket_endpoint(ws: WebSocket, chat_id: str):
     session_dir = WORKSPACE / chat["session_dir"]
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    # Rebuild LLM history from DB
     history = []
     for m in chat["messages"]:
         role = "user" if m["role"] == "user" else "model"
@@ -454,15 +478,14 @@ async def websocket_endpoint(ws: WebSocket, chat_id: str):
             if data["type"] == "message":
                 user_msg = data["content"]
                 save_message(chat_id, "user", user_msg)
-                user_msg = "<thought off>" + user_msg  # suppress Gemma thinking
+                user_msg_llm = "<thought off>" + user_msg
 
-                # Auto-title after first message
                 if len(chat["messages"]) == 0:
                     title = auto_title(user_msg)
                     update_chat_title(chat_id, title)
                     await ws.send_json({"type": "title_updated", "title": title})
 
-                history = await run_agent(user_msg, history, ws, session_dir, chat_id)
+                history = await run_agent(user_msg_llm, history, ws, session_dir, chat_id)
 
     except WebSocketDisconnect:
         pass
