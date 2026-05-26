@@ -513,8 +513,10 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     rotator.index = rotator.keys.index(try_key) + 1
                     break
                 except Exception as e:
-                    if "503" in str(e) or "UNAVAILABLE" in str(e) or "429" in str(e):
+                    err_str = str(e)
+                    if any(x in err_str for x in ("503", "500", "UNAVAILABLE", "INTERNAL", "429", "RESOURCE_EXHAUSTED")):
                         last_err = e
+                        await asyncio.sleep(1)
                         continue
                     raise
             if response is not None:
