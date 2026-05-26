@@ -207,8 +207,7 @@ def tool_apply_diff(path, diff, *, session_dir):
     if e: return {"error": e}
     original = t.read_text(errors="replace") if t.exists() else ""
 
-    # 重複適用チェック: diffのハッシュをファイルごとに記録
-    import hashlib
+    import hashlib, difflib
     diff_hash = hashlib.md5(diff.encode()).hexdigest()
     marker_dir = session_dir / ".diff_applied"
     marker_dir.mkdir(exist_ok=True)
@@ -217,63 +216,124 @@ def tool_apply_diff(path, diff, *, session_dir):
         return {"error": "already_applied", "message": "This diff has already been applied. Do not apply again."}
     marker.touch()
 
-    try:
-        new_lines = list(original.splitlines(keepends=True))
-        diff_lines = diff.splitlines(keepends=True)
+    def _find_block(file_lines, search_lines, hint=None):
+        """完全一致 → strip一致 → fuzzy の順で検索"""
+        n = len(search_lines)
+        if n == 0:
+            return hint or 0
 
-        # hunkを分割
+        search_order = list(range(max(0, len(file_lines) - n + 1)))
+        if hint is not None:
+            search_order.sort(key=lambda x: abs(x - hint))
+
+        # 段階1: 完全一致
+        for i in search_order:
+            if all(i+k < len(file_lines) and
+                   file_lines[i+k].rstrip("\n\r") == search_lines[k].rstrip("\n\r")
+                   for k in range(n)):
+                return i
+
+        # 段階2: strip一致（インデント違い吸収）
+        for i in search_order:
+            if all(i+k < len(file_lines) and
+                   file_lines[i+k].rstrip("\n\r").strip() == search_lines[k].rstrip("\n\r").strip()
+                   for k in range(n)):
+                return i
+
+        # 段階3: fuzzy（ratio > 0.65）
+        needle = "".join(l.rstrip("\n\r").strip() for l in search_lines)
+        best_i, best_ratio = None, 0.65
+        for i in search_order:
+            window = "".join(file_lines[i+k].rstrip("\n\r").strip()
+                             for k in range(n) if i+k < len(file_lines))
+            ratio = difflib.SequenceMatcher(None, needle, window).ratio()
+            if ratio > best_ratio:
+                best_ratio, best_i = ratio, i
+        return best_i
+
+    try:
+        # ── 形式1: SEARCH/REPLACE ブロック ──────────────────────────────
+        if "<<<<<<" in diff and "=======" in diff:
+            text = original
+            pattern = re.compile(
+                r"<{6,7}\s*SEARCH\s*\n(.*?)\n?={6,7}\n(.*?)\n?>{6,7}\s*REPLACE",
+                re.DOTALL
+            )
+            matches = list(pattern.finditer(diff))
+            if not matches:
+                marker.unlink(missing_ok=True)
+                return {"error": "SEARCH/REPLACE形式のパースに失敗。<<<<<<< SEARCH / ======= / >>>>>>> REPLACE の形式を確認してください。"}
+            applied, errors = 0, []
+            for m in matches:
+                search_block = m.group(1)
+                replace_block = m.group(2)
+                if search_block in text:
+                    text = text.replace(search_block, replace_block, 1)
+                    applied += 1
+                else:
+                    # strip一致で探す
+                    sl = search_block.splitlines()
+                    fl = text.splitlines()
+                    found = False
+                    for i in range(len(fl) - len(sl) + 1):
+                        if all(fl[i+k].strip() == sl[k].strip() for k in range(len(sl))):
+                            actual = "\n".join(fl[i:i+len(sl)])
+                            text = text.replace(actual, replace_block, 1)
+                            applied += 1
+                            found = True
+                            break
+                    if not found:
+                        errors.append(f"SEARCHブロック未発見:\n{search_block[:200]}")
+            if errors and applied == 0:
+                marker.unlink(missing_ok=True)
+                return {"error": "\n".join(errors)}
+            t.parent.mkdir(parents=True, exist_ok=True)
+            t.write_text(text)
+            result = {"success": True, "path": path, "lines": len(text.splitlines()),
+                      "lines_changed": applied, "lines_removed": len(matches) - applied,
+                      "format": "search_replace"}
+            if errors:
+                result["warnings"] = errors
+            return result
+
+        # ── 形式2: unified diff (@@ ... @@) ────────────────────────────
+        diff_lines = diff.splitlines(keepends=True)
         hunks = []
         i = 0
         while i < len(diff_lines):
             line = diff_lines[i]
             if line.startswith("@@"):
                 m = re.search(r"-(\d+)(?:,\d+)?", line)
-                hint = int(m.group(1)) - 1 if m else 0
+                hint = int(m.group(1)) - 1 if m else None
                 hunk_body = []
                 i += 1
                 while i < len(diff_lines) and not diff_lines[i].startswith("@@"):
-                    hunk_body.append(diff_lines[i])
+                    if not diff_lines[i].startswith(("---", "+++")):
+                        hunk_body.append(diff_lines[i])
                     i += 1
                 hunks.append((hint, hunk_body))
             else:
                 i += 1
 
         if not hunks:
-            return {"error": "No hunks found in diff"}
+            marker.unlink(missing_ok=True)
+            return {"error": "diffフォーマット不明。unified diff (@@ ... @@) か SEARCH/REPLACE 形式で記述してください。"}
 
+        new_lines = list(original.splitlines(keepends=True))
         offset = 0
-        for hint, hunk_body in hunks:
-            # コンテキスト行（先頭・末尾の変更なし行）を抽出して検索キーに使う
-            ctx_lines = [l[1:] if l.startswith((" ", "\t")) else l
-                         for l in hunk_body
-                         if not l.startswith("+") and not l.startswith("-")]
-            ctx_stripped = [l.rstrip("\n\r") for l in ctx_lines]
+        hunk_errors = []
 
-            # 削除対象行を抽出
-            del_lines = [l[1:].rstrip("\n\r") if l.startswith("-") else None for l in hunk_body]
+        for hunk_idx, (hint, hunk_body) in enumerate(hunks):
+            # コンテキスト行 + 削除行をsearch対象にする
+            search_lines = [l[1:] if l.startswith((" ", "-")) else l
+                            for l in hunk_body if not l.startswith("+")]
+            hint_adj = (hint + offset) if hint is not None else None
+            best_pos = _find_block(new_lines, search_lines, hint=hint_adj)
 
-            # ヒント付近を中心にコンテキスト行でマッチング位置を探す
-            search_start = max(0, hint + offset - 10)
-            search_end = min(len(new_lines), hint + offset + len(hunk_body) + 20)
-            best_pos = None
-
-            if ctx_stripped:
-                # コンテキスト行がある場合：先頭コンテキスト行でマッチ位置を特定
-                first_ctx = next((c for c in ctx_stripped if c.strip()), None)
-                if first_ctx is not None:
-                    candidates = []
-                    for li in range(search_start, search_end):
-                        if li < len(new_lines) and new_lines[li].rstrip("\n\r") == first_ctx:
-                            candidates.append(li)
-                    # 複数候補はhintに最も近いものを選択
-                    if candidates:
-                        best_pos = min(candidates, key=lambda x: abs(x - (hint + offset)))
-
-            # コンテキスト行がない or マッチしなかった場合はヒントを使用
             if best_pos is None:
-                best_pos = hint + offset
+                hunk_errors.append(f"hunk {hunk_idx+1}: マッチ失敗。対象:\n{''.join(search_lines[:5])[:200]}")
+                continue
 
-            # hunkを適用
             j = best_pos
             for l in hunk_body:
                 if l.startswith("-"):
@@ -281,20 +341,31 @@ def tool_apply_diff(path, diff, *, session_dir):
                         del new_lines[j]
                         offset -= 1
                 elif l.startswith("+"):
-                    new_lines.insert(j, l[1:] if not l[1:].endswith("\n") else l[1:])
+                    ins = l[1:] if l[1:].endswith("\n") else l[1:] + "\n"
+                    new_lines.insert(j, ins)
                     j += 1
                     offset += 1
                 else:
                     j += 1
+
+        if hunk_errors and len(hunk_errors) == len(hunks):
+            marker.unlink(missing_ok=True)
+            return {"error": "全hunk適用失敗:\n" + "\n".join(hunk_errors)}
 
         t.parent.mkdir(parents=True, exist_ok=True)
         result_text = "".join(new_lines)
         t.write_text(result_text)
         lines_added = sum(1 for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
         lines_removed = sum(1 for l in diff.splitlines() if l.startswith("-") and not l.startswith("---"))
-        return {"success": True, "path": path, "lines": len(new_lines), "lines_changed": lines_added, "lines_removed": lines_removed, "preview": result_text[:500]}
+        result = {"success": True, "path": path, "lines": len(new_lines),
+                  "lines_changed": lines_added, "lines_removed": lines_removed,
+                  "format": "unified_diff"}
+        if hunk_errors:
+            result["warnings"] = hunk_errors
+        return result
+
     except Exception as ex:
-        marker.unlink(missing_ok=True)  # 失敗したらマーカー削除
+        marker.unlink(missing_ok=True)
         return {"error": str(ex)}
 
 def tool_run_command(command, cwd=".", *, session_dir):
@@ -472,6 +543,16 @@ RULES:
 - NEVER translate or repeat the user's message back to them.
 - If the user writes in Japanese, your ENTIRE response must be in Japanese (except code).
 - NEVER output diff text in chat. ALWAYS call the apply_diff tool directly — no exceptions.
+- apply_diff supports TWO formats:
+  1) unified diff: standard @@ -N,M +N,M @@ hunks (preferred for large changes)
+  2) SEARCH/REPLACE: use this for targeted edits:
+     <<<<<<< SEARCH
+     exact lines to find
+     =======
+     replacement lines
+     >>>>>>> REPLACE
+- For SEARCH/REPLACE: the SEARCH block must match the file exactly (whitespace-tolerant).
+- Prefer SEARCH/REPLACE for small targeted edits; unified diff for multi-hunk changes.
 - NEVER output file contents in chat. ALWAYS call write_file tool directly.
 - NEVER say "修正が完了しました" or "以下のdiffを適用します" without actually calling the tool first.
 - After apply_diff or write_file succeeds, do NOT read_file to verify — trust the result and report done.
