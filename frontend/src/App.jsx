@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { ChevronRight, ChevronDown, File, Folder, FolderOpen, X, Check, Terminal,
   Search, RefreshCw, Download, Plus, Trash2, Send, Loader2, AlertTriangle,
-  Globe, Code2, Cpu, Paperclip, MessageSquare, Edit2, Copy } from 'lucide-react'
+  Globe, Code2, Cpu, Paperclip, MessageSquare, Edit2, Copy, Lock } from 'lucide-react'
 import MonacoEditor from '@monaco-editor/react'
 import ReactMarkdown from 'react-markdown'
 import './App.css'
@@ -10,31 +10,111 @@ import './App.css'
 const BACKEND_URL = (typeof __BACKEND_URL__ !== 'undefined' && __BACKEND_URL__) ? __BACKEND_URL__.replace(/\/$/, '') : ''
 const apiUrl = (path) => `${BACKEND_URL}${path}`
 
+// ---- Login Screen ----
+function LoginScreen({ onLogin }) {
+  const [passcode, setPasscode] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  async function handleSubmit() {
+    if (!passcode.trim()) return
+    setLoading(true)
+    setError('')
+    try {
+      const r = await fetch(apiUrl('/api/auth'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passcode })
+      })
+      if (r.ok) {
+        sessionStorage.setItem('codesigner_auth', passcode)
+        onLogin()
+      } else {
+        setError('パスコードが違います')
+      }
+    } catch {
+      setError('接続エラー')
+    }
+    setLoading(false)
+  }
+
+  return (
+    <div className="login-screen">
+      <div className="login-card">
+        <div className="login-logo">
+          <span className="logo-icon">⌘</span>
+          <span className="logo-text">codesigner</span>
+        </div>
+        <div className="login-icon"><Lock size={24} /></div>
+        <h2 className="login-title">パスコードを入力</h2>
+        <input
+          className="login-input"
+          type="password"
+          placeholder="Passcode"
+          value={passcode}
+          autoFocus
+          onChange={e => setPasscode(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+        />
+        {error && <div className="login-error">{error}</div>}
+        <button className="login-btn" onClick={handleSubmit} disabled={loading || !passcode.trim()}>
+          {loading ? <Loader2 size={14} className="spin" /> : 'ログイン'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ---- WebSocket Hook ----
 function useAgent(chatId) {
   const ws = useRef(null)
   const [connected, setConnected] = useState(false)
   const handlers = useRef({})
+  const chatIdRef = useRef(chatId)
+
+  useEffect(() => { chatIdRef.current = chatId }, [chatId])
 
   const connect = useCallback(() => {
     if (!chatId) return
-    if (ws.current?.readyState === WebSocket.OPEN) ws.current.close()
+    // 既存WSを閉じる
+    if (ws.current) {
+      ws.current.onclose = null // 自動再接続を無効化
+      ws.current.close()
+      ws.current = null
+    }
+    setConnected(false)
     const _backendUrl = BACKEND_URL
     const wsProto = _backendUrl ? (_backendUrl.startsWith('https') ? 'wss' : 'ws') : (location.protocol === 'https:' ? 'wss' : 'ws')
     const wsHost = _backendUrl ? _backendUrl.replace(/^https?:\/\//, '') : location.host
     const sock = new WebSocket(`${wsProto}://${wsHost}/ws/${chatId}`)
     sock.onopen = () => setConnected(true)
-    sock.onclose = () => { setConnected(false); setTimeout(connect, 3000) }
+    sock.onclose = () => {
+      setConnected(false)
+      // 同じchatIdなら再接続
+      if (chatIdRef.current === chatId) {
+        setTimeout(() => { if (chatIdRef.current === chatId) connect() }, 3000)
+      }
+    }
     sock.onerror = () => sock.close()
     sock.onmessage = (e) => {
-      try { const msg = JSON.parse(e.data); handlers.current[msg.type]?.(msg) } catch {}
+      try {
+        const msg = JSON.parse(e.data)
+        // 現在のchatIdのメッセージのみ処理
+        handlers.current[msg.type]?.(msg)
+      } catch {}
     }
     ws.current = sock
   }, [chatId])
 
   useEffect(() => {
     connect()
-    return () => ws.current?.close()
+    return () => {
+      if (ws.current) {
+        ws.current.onclose = null
+        ws.current.close()
+        ws.current = null
+      }
+    }
   }, [connect])
 
   const send = useCallback((data) => {
@@ -370,7 +450,7 @@ function ApprovalCard({ msg, onApprove, onReject }) {
 }
 
 // ---- Message Renderer ----
-function MessageList({ messages, onRetry, onEditSend }) {
+function MessageList({ messages, onRetry, onEditSend, activeChatId }) {
   const bottomRef = useRef(null)
   const [editingIdx, setEditingIdx] = useState(null)
   const [editValue, setEditValue] = useState('')
@@ -459,6 +539,7 @@ function MessageList({ messages, onRetry, onEditSend }) {
             <ReactMarkdown>{msg.content}</ReactMarkdown>
           </div>
         )
+        if (msg.type === 'tool_call') return <ToolCallBadge key={i} tool={msg.tool} args={msg.args} />
         if (msg.type === 'tool_result') return <ToolResultView key={i} tool={msg.tool} result={msg.result} />
         if (msg.type === 'output_files') return (
           <div key={i} className="message agent-msg">
@@ -497,6 +578,10 @@ function MessageList({ messages, onRetry, onEditSend }) {
 
 // ---- Main App ----
 export default function App() {
+  const [authChecked, setAuthChecked] = useState(false)
+  const [authed, setAuthed] = useState(false)
+  const [authRequired, setAuthRequired] = useState(false)
+
   const [chats, setChats] = useState([])
   const [activeChatId, setActiveChatId] = useState(null)
   const [messages, setMessages] = useState([])
@@ -511,38 +596,74 @@ export default function App() {
   const [pendingApproval, setPendingApproval] = useState(null)
   const [attachments, setAttachments] = useState([])
   const [isDragging, setIsDragging] = useState(false)
-  const [lastUserMsg, setLastUserMsg] = useState('')
   const [thinkingLevel, setThinkingLevel] = useState('none')
   const [pendingOutputFiles, setPendingOutputFiles] = useState([])
   const textareaRef = useRef(null)
 
-  const { connected, send, on } = useAgent(activeChatId)
-
-  // Load chats on mount
+  // 認証チェック
   useEffect(() => {
+    fetch(apiUrl('/api/auth/required')).then(r => r.json()).then(d => {
+      if (!d.required) {
+        setAuthed(true)
+        setAuthRequired(false)
+        setAuthChecked(true)
+      } else {
+        setAuthRequired(true)
+        const saved = sessionStorage.getItem('codesigner_auth')
+        if (saved) {
+          fetch(apiUrl('/api/auth'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ passcode: saved })
+          }).then(r => {
+            if (r.ok) setAuthed(true)
+            setAuthChecked(true)
+          })
+        } else {
+          setAuthChecked(true)
+        }
+      }
+    }).catch(() => { setAuthed(true); setAuthChecked(true) })
+  }, [])
+
+  const { connected, send, on } = useAgent(authed ? activeChatId : null)
+
+  // チャット読み込み
+  useEffect(() => {
+    if (!authed) return
     fetch(apiUrl('/api/chats')).then(r => r.json()).then(async d => {
       const chats = d.chats || []
       if (chats.length > 0) {
         setChats(chats)
         selectChat(chats[0].id)
       } else {
-        // 初回：チャットを自動作成
         const r = await fetch(apiUrl('/api/chats'), { method: 'POST' })
         const chat = await r.json()
         setChats([chat])
         selectChat(chat.id)
       }
     })
-  }, [])
+  }, [authed])
 
   // WS handlers
   useEffect(() => {
     on('ready', (msg) => {
       const chat = msg.chat
+      // DBの全メッセージ（tool_call/tool_result含む）を復元
       const rebuilt = []
       let dbIdx = 0
       for (const m of chat.messages) {
-        if (m.role === 'user') {
+        if (m.msg_type === 'tool_call') {
+          try {
+            const parsed = JSON.parse(m.content)
+            rebuilt.push({ type: 'tool_call', tool: parsed.tool, args: parsed.args })
+          } catch {}
+        } else if (m.msg_type === 'tool_result') {
+          try {
+            const parsed = JSON.parse(m.content)
+            rebuilt.push({ type: 'tool_result', tool: parsed.tool, result: parsed.result })
+          } catch {}
+        } else if (m.role === 'user') {
           rebuilt.push({ type: 'user', content: m.content, dbIndex: dbIdx })
           dbIdx++
         } else {
@@ -554,9 +675,7 @@ export default function App() {
       refreshFiles(chat.id)
       refreshOutputs(chat.id)
     })
-    on('thinking_level', (msg) => {
-      setThinkingLevel(msg.level)
-    })
+    on('thinking_level', (msg) => setThinkingLevel(msg.level))
     on('system_msg', (msg) => {
       setMessages(prev => [...prev, { type: 'system', content: msg.content }])
     })
@@ -646,6 +765,8 @@ export default function App() {
     setSelectedFile(null)
     setOpenTabs([])
     setPendingOutputFiles([])
+    setLoading(false)
+    setPendingApproval(null)
   }
 
   async function createChat() {
@@ -674,7 +795,6 @@ export default function App() {
   const sendMessage = useCallback((overrideText) => {
     const text = (overrideText ?? input).trim()
     if (!text || loading || !connected || !activeChatId) return
-    setLastUserMsg(text)
     setMessages(prev => {
       const userCount = prev.filter(m => m.type === 'user').length
       return [...prev, { type: 'user', content: text, dbIndex: userCount }, { type: 'thinking' }]
@@ -688,7 +808,6 @@ export default function App() {
 
   const sendEdit = useCallback((text, dbIndex) => {
     if (!text || loading || !connected || !activeChatId) return
-    // dbIndex以降のメッセージをUIから切り詰めてからやり直す
     setMessages(prev => {
       const cutUiIdx = dbIndex !== null
         ? prev.findIndex(m => m.type === 'user' && m.dbIndex === dbIndex)
@@ -702,7 +821,6 @@ export default function App() {
 
   const handleRetry = useCallback((dbIndex) => {
     if (loading || !connected || !activeChatId) return
-    // dbIndex以降（その返答も含む）をUIから削除してthinkingを追加
     setMessages(prev => {
       const cutUiIdx = dbIndex !== null
         ? prev.findIndex(m => m.type === 'user' && m.dbIndex === dbIndex)
@@ -767,12 +885,8 @@ export default function App() {
     }
     if (uploaded.length > 0) {
       setAttachments(prev => [...prev, ...uploaded])
-      // アップロード完了をAIに自動通知して解説・処理を促す
       const fileList = uploaded.map(p => `\`${p}\``).join(', ')
-      const notify = uploaded.length === 1
-        ? `${fileList} をinputフォルダにアップロードしました。`
-        : `${fileList} をinputフォルダにアップロードしました。`
-      setInput(prev => prev ? `${prev}\n${notify}` : notify)
+      setInput(prev => prev ? `${prev}\n${fileList} をinputフォルダにアップロードしました。` : `${fileList} をinputフォルダにアップロードしました。`)
       if (textareaRef.current) textareaRef.current.focus()
     }
   }
@@ -785,9 +899,20 @@ export default function App() {
 
   const lang = selectedFile ? (selectedFile.endsWith('.py') ? 'python' : selectedFile.endsWith('.js') || selectedFile.endsWith('.jsx') ? 'javascript' : selectedFile.endsWith('.ts') ? 'typescript' : selectedFile.endsWith('.json') ? 'json' : selectedFile.endsWith('.md') ? 'markdown' : selectedFile.endsWith('.css') ? 'css' : selectedFile.endsWith('.html') ? 'html' : selectedFile.endsWith('.sh') ? 'shell' : 'plaintext') : 'plaintext'
 
+  // 認証チェック中
+  if (!authChecked) return (
+    <div className="login-screen">
+      <div className="login-card">
+        <Loader2 size={24} className="spin" />
+      </div>
+    </div>
+  )
+
+  // 未認証
+  if (authRequired && !authed) return <LoginScreen onLogin={() => setAuthed(true)} />
+
   return (
     <div className="app">
-      {/* Chat Sidebar */}
       <ChatSidebar
         chats={chats}
         activeChatId={activeChatId}
@@ -797,7 +922,6 @@ export default function App() {
         onRename={renameChat}
       />
 
-      {/* File Sidebar */}
       <div className="file-sidebar">
         <FileTree
           files={files}
@@ -814,9 +938,7 @@ export default function App() {
         />
       </div>
 
-      {/* Main */}
       <div className="main-area">
-        {/* Topbar */}
         <div className="topbar">
           <div className="tabs">
             <button className={`tab ${activeTab === 'chat' ? 'active' : ''}`} onClick={() => setActiveTab('chat')}>
@@ -844,7 +966,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Content */}
         {activeTab === 'chat' ? (
           <div className="chat-area">
             {!activeChatId ? (
@@ -861,7 +982,7 @@ export default function App() {
                   onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
                   style={{display:'contents'}}
                 >
-                <MessageList messages={messages} onRetry={handleRetry} onEditSend={sendEdit} />
+                <MessageList messages={messages} onRetry={handleRetry} onEditSend={sendEdit} activeChatId={activeChatId} />
                 {pendingApproval && (
                   <div className="approval-overlay">
                     <ApprovalCard msg={pendingApproval} onApprove={() => handleApproval(true)} onReject={() => handleApproval(false)} />
@@ -896,7 +1017,7 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                </div>{/* chat-drop-zone */}
+                </div>
               </>
             )}
           </div>

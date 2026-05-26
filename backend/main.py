@@ -17,6 +17,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 WORKSPACE = Path(os.getenv("WORKSPACE", "/workspace"))
 WORKSPACE.mkdir(parents=True, exist_ok=True)
 DB_PATH = WORKSPACE / "codesigner.db"
+LOGIN_PASSCODE = os.getenv("LOGIN_PASSCODE", "")  # 空文字なら認証なし
 
 # ---- DB ----
 def init_db():
@@ -33,9 +34,14 @@ def init_db():
             chat_id TEXT NOT NULL,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
+            msg_type TEXT NOT NULL DEFAULT 'text',
             created_at TEXT NOT NULL,
             FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
         )""")
+        # マイグレーション: msg_typeカラムがない場合追加
+        cols = [r[1] for r in c.execute("PRAGMA table_info(messages)").fetchall()]
+        if 'msg_type' not in cols:
+            c.execute("ALTER TABLE messages ADD COLUMN msg_type TEXT NOT NULL DEFAULT 'text'")
         c.execute("PRAGMA foreign_keys = ON")
         c.commit()
 
@@ -114,9 +120,10 @@ def list_chats() -> list:
         rows = db.execute("SELECT id,title,session_dir,created_at,updated_at FROM chats ORDER BY updated_at DESC").fetchall()
     return [dict(r) for r in rows]
 
-def save_message(chat_id: str, role: str, content: str):
+def save_message(chat_id: str, role: str, content: str, msg_type: str = "text"):
     with get_db() as db:
-        db.execute("INSERT INTO messages VALUES (?,?,?,?,?)", (uuid.uuid4().hex, chat_id, role, content, now_iso()))
+        db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)",
+                   (uuid.uuid4().hex, chat_id, role, content, msg_type, now_iso()))
         db.execute("UPDATE chats SET updated_at=? WHERE id=?", (now_iso(), chat_id))
 
 def truncate_messages_from(chat_id: str, from_index: int):
@@ -324,7 +331,6 @@ def tool_apply_diff(path, diff, *, session_dir):
         hunk_errors = []
 
         for hunk_idx, (hint, hunk_body) in enumerate(hunks):
-            # コンテキスト行 + 削除行をsearch対象にする
             search_lines = [l[1:] if l.startswith((" ", "-")) else l
                             for l in hunk_body if not l.startswith("+")]
             hint_adj = (hint + offset) if hint is not None else None
@@ -423,22 +429,19 @@ async def tool_fetch_url(url, **_):
         return {"error": str(ex)}
 
 def to_json_safe(obj):
-    """任意のオブジェクトをJSON安全なdict/list/strに変換"""
     if obj is None or isinstance(obj, (bool, int, float)):
         return obj
     if isinstance(obj, str):
-        # 制御文字除去（改行・タブは保持）、サロゲートペア等も除去
         try:
             cleaned = obj.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
         except Exception:
             cleaned = repr(obj)
-        cleaned = re.sub(r'[--]', '', cleaned)
+        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', cleaned)
         return cleaned[:100000] + "...(truncated)" if len(cleaned) > 100000 else cleaned
     if isinstance(obj, dict):
         return {str(k): to_json_safe(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [to_json_safe(i) for i in obj]
-    # MapComposite等のProtobuf型も含め、dictに変換を試みる
     try:
         return to_json_safe(dict(obj))
     except Exception:
@@ -518,7 +521,6 @@ TOOL_DEFS = [types.Tool(function_declarations=[
         parameters=types.Schema(type="OBJECT",properties={"path":types.Schema(type="STRING"),"output_name":types.Schema(type="STRING")},required=["path"])),
 ])]
 
-# Auto thinkingの判定：複雑なタスクかどうかをキーワードで判断
 AUTO_THINKING_KEYWORDS = [
     "debug", "fix", "error", "bug", "why", "implement", "design", "architect",
     "optimize", "refactor", "algorithm", "analyze", "compare", "explain",
@@ -527,7 +529,6 @@ AUTO_THINKING_KEYWORDS = [
 ]
 
 def should_think(message: str) -> bool:
-    """Autoモード用: メッセージが複雑なタスクか判定"""
     lower = message.lower()
     return any(kw in lower for kw in AUTO_THINKING_KEYWORDS)
 
@@ -554,7 +555,9 @@ RULES:
 - For SEARCH/REPLACE: the SEARCH block must match the file exactly (whitespace-tolerant).
 - Prefer SEARCH/REPLACE for small targeted edits; unified diff for multi-hunk changes.
 - NEVER output file contents in chat. ALWAYS call write_file tool directly.
-- NEVER say "修正が完了しました" or "以下のdiffを適用します" without actually calling the tool first.
+- If apply_diff returns an error, immediately retry with a corrected diff that fixes the specific error. Keep retrying until success.
+- After ALL intended edits are applied successfully, output a brief summary ending with "✅ 完了" (or "✅ Done" in English).
+- If you have more edits to do, do NOT say "完了" — just continue calling tools.
 - After apply_diff or write_file succeeds, do NOT read_file to verify — trust the result and report done.
 - read_file before editing existing files
 - User-uploaded files are saved to the `input/` folder. When the user mentions a file, check `input/` first.
@@ -565,7 +568,6 @@ RULES:
 """
 
 def auto_title(message: str) -> str:
-    # Remove <thought off> prefix if present
     msg = message.replace("<thought off>", "").strip()
     words = msg.strip().split()[:8]
     title = " ".join(words)
@@ -575,10 +577,6 @@ MODELS = ["gemini-3.1-flash-lite", "gemini-3.1-flash-lite-001"]
 
 
 def clean_text(text: str) -> str:
-    """
-    Gemini用: <think>タグ除去のみ。
-    GeminiはThinkingConfigでthinkingを制御するためメタコメント漏れは発生しない。
-    """
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
@@ -589,8 +587,11 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
     messages = history + [types.Content(role="user", parts=[types.Part(text=user_message)])]
     loop = asyncio.get_event_loop()
 
-    for _ in range(20):
-        # Try models × keys with fallback
+    # diff失敗カウンタ（同一hunkの無限リトライ防止）
+    diff_fail_count = 0
+    MAX_DIFF_RETRIES = 3
+
+    for _ in range(30):
         response = None
         last_err = None
         tried = set()
@@ -606,9 +607,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     tool_calls = []
                     candidate_content = None
 
-                    # streamingをexecutorで実行してイベントループをブロックしない
                     def make_stream():
-                        # Gemini 3.1 Flash-Lite: ThinkingConfigでthinkingを制御
                         if thinking_level == "auto":
                             thinking_on = should_think(user_message)
                         else:
@@ -631,10 +630,6 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
                     stream = await loop.run_in_executor(None, make_stream)
 
-                    def consume_chunk(chunk):
-                        # 同期イテレータから1チャンク取得
-                        return chunk
-
                     for chunk in stream:
                         if not chunk.candidates:
                             continue
@@ -646,7 +641,6 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                                 if cleaned:
                                     accumulated_text += cleaned
                                     await ws.send_json({"type": "stream", "content": cleaned})
-                                    # イベントループに制御を返す（UI更新のため）
                                     await asyncio.sleep(0)
                             if part.function_call:
                                 tool_calls.append(part.function_call)
@@ -655,7 +649,6 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                         await ws.send_json({"type": "stream_end"})
 
                     response = {"text": accumulated_text, "tool_calls": tool_calls, "content": candidate_content}
-                    # 成功したキーに次回もローテーションを合わせる
                     rotator.index = rotator.keys.index(try_key) + 1
                     break
                 except Exception as e:
@@ -685,9 +678,12 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
         if candidate_content:
             messages.append(candidate_content)
         tool_response_parts = []
+        has_diff_error = False
 
         for fc in tool_calls:
             name, args = fc.name, dict(fc.args)
+            # tool_callをDBに保存（リロード後復元用）
+            save_message(chat_id, "tool", json.dumps({"tool": name, "args": to_json_safe(args)}), msg_type="tool_call")
             await ws.send_json({"type": "tool_call", "tool": name, "args": to_json_safe(args)})
 
             required, reason = needs_approval(name, args, session_dir)
@@ -703,6 +699,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     if not (msg.get("type") == "approval" and msg.get("approved")):
                         result = {"cancelled": True}
                         await ws.send_json({"type": "tool_result", "tool": name, "result": result})
+                        save_message(chat_id, "tool", json.dumps({"tool": name, "result": result}), msg_type="tool_result")
                         tool_response_parts.append(types.Part(
                             function_response=types.FunctionResponse(name=name, response=sanitize_result(result))
                         ))
@@ -715,21 +712,41 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     continue
 
             result = await dispatch_tool(name, args, session_dir)
+            # tool_resultをDBに保存
+            save_message(chat_id, "tool", json.dumps({"tool": name, "result": result}), msg_type="tool_result")
             await ws.send_json({"type": "tool_result", "tool": name, "result": result})
             max_len = 500000 if name == "read_file" else 100000
             tool_response_parts.append(types.Part(
                 function_response=types.FunctionResponse(name=name, response=sanitize_result(result, max_len=max_len))
             ))
 
+            # diff失敗検出
+            if name == "apply_diff" and result.get("error") and result.get("error") != "already_applied":
+                has_diff_error = True
+                diff_fail_count += 1
+
+            # diff成功でカウンタリセット
+            if name == "apply_diff" and result.get("success"):
+                diff_fail_count = 0
+
         messages.append(types.Content(role="user", parts=tool_response_parts))
 
-        # apply_diff / write_file が成功したらループ終了（重複適用防止）
-        wrote = [fc for fc in tool_calls if fc.name in ("apply_diff", "write_file")]
-        if wrote:
+        # diff失敗が多すぎる場合は終了
+        if diff_fail_count >= MAX_DIFF_RETRIES:
+            save_message(chat_id, "assistant", "diff適用を3回試みましたが失敗しました。ファイルの内容を確認して別のアプローチを検討してください。")
+            await ws.send_json({"type": "stream", "content": "diff適用を3回試みましたが失敗しました。ファイルの内容を確認して別のアプローチを検討してください。"})
+            await ws.send_json({"type": "stream_end"})
+            break
+
+        # diff失敗の場合はAIに再試行させる（ループ継続）
+        if has_diff_error:
+            continue
+
+        # テキストに"✅"または"完了"が含まれていたら終了
+        if text and ("✅" in text or ("完了" in text and not tool_calls)):
             if text:
                 save_message(chat_id, "assistant", text)
-            await ws.send_json({"type": "done"})
-            return messages
+            break
 
     await ws.send_json({"type": "done"})
     return messages
@@ -748,12 +765,14 @@ async def websocket_endpoint(ws: WebSocket, chat_id: str):
     session_dir = WORKSPACE / chat["session_dir"]
     session_dir.mkdir(parents=True, exist_ok=True)
 
+    # historyはuser/assistantのみ（tool系は除く）
     history = []
     for m in chat["messages"]:
+        if m["msg_type"] in ("tool_call", "tool_result"):
+            continue
         role = "user" if m["role"] == "user" else "model"
         history.append(types.Content(role=role, parts=[types.Part(text=m["content"])]))
 
-    # thinking_level: "none" | "auto" | "high"
     thinking_level = "none"
 
     await ws.send_json({"type": "ready", "chat": {
@@ -772,7 +791,6 @@ async def websocket_endpoint(ws: WebSocket, chat_id: str):
             if data["type"] == "message":
                 user_msg = data["content"]
 
-                # /thinking コマンド処理
                 cmd = user_msg.strip().lower()
                 if cmd in ("/thinking on", "/thinking high"):
                     thinking_level = "high"
@@ -795,29 +813,26 @@ async def websocket_endpoint(ws: WebSocket, chat_id: str):
 
                 save_message(chat_id, "user", user_msg)
 
-                if len(chat["messages"]) == 0:
+                if len([m for m in chat["messages"] if m["role"] == "user"]) == 0:
                     title = auto_title(user_msg)
                     update_chat_title(chat_id, title)
                     await ws.send_json({"type": "title_updated", "title": title})
 
                 history = await run_agent(user_msg, history, ws, session_dir, chat_id, thinking_level=thinking_level)
+                # チャットを再取得してupdateする
+                chat = get_chat(chat_id) or chat
 
             elif data["type"] in ("edit", "retry"):
-                # 編集・再試行: truncate_at以降のメッセージを削除してやり直す
-                truncate_at = data.get("truncate_at")  # DBメッセージのインデックス
+                truncate_at = data.get("truncate_at")
                 user_msg = data.get("content", "")
 
                 if truncate_at is not None:
-                    # DBとhistoryをそのインデックスで切り詰める
                     truncate_messages_from(chat_id, truncate_at)
-                    # historyはDB上の user/assistant ペアに対応（toolの内部ターンは含まない）
-                    # truncate_atはUI上のuser messageのインデックスなので、historyも同様に切り詰める
                     history = history[:truncate_at]
-                    chat["messages"] = chat["messages"][:truncate_at]
+                    chat["messages"] = chat["messages"][:truncate_at] if chat else []
 
                 if not user_msg:
-                    # retryで内容変更なし: 最後のuserメッセージを再利用
-                    last_user = next((m for m in reversed(chat["messages"]) if m["role"] == "user"), None)
+                    last_user = next((m for m in reversed(chat["messages"] if chat else []) if m["role"] == "user"), None)
                     user_msg = last_user["content"] if last_user else ""
 
                 if not user_msg:
@@ -825,6 +840,7 @@ async def websocket_endpoint(ws: WebSocket, chat_id: str):
 
                 save_message(chat_id, "user", user_msg)
                 history = await run_agent(user_msg, history, ws, session_dir, chat_id, thinking_level=thinking_level)
+                chat = get_chat(chat_id) or chat
 
     except WebSocketDisconnect:
         pass
@@ -833,6 +849,19 @@ async def websocket_endpoint(ws: WebSocket, chat_id: str):
             await ws.send_json({"type": "error", "content": str(e)})
         except Exception:
             pass
+
+# ---- Auth ----
+@app.post("/api/auth")
+def api_auth(body: dict):
+    if not LOGIN_PASSCODE:
+        return {"success": True}
+    if body.get("passcode") == LOGIN_PASSCODE:
+        return {"success": True}
+    raise HTTPException(401, "Invalid passcode")
+
+@app.get("/api/auth/required")
+def api_auth_required():
+    return {"required": bool(LOGIN_PASSCODE)}
 
 # ---- Chat REST API ----
 @app.get("/api/chats")
@@ -898,7 +927,6 @@ async def upload_file(file: UploadFile = File(...), chat_id: str = Form(""), pat
     chat = get_chat(chat_id)
     if not chat: raise HTTPException(404)
     session_dir = WORKSPACE / chat["session_dir"]
-    # pathが指定されていない場合はinput/に保存
     save_path = path or f"input/{file.filename or 'upload'}"
     dest = (session_dir / save_path).resolve()
     if not str(dest).startswith(str(session_dir.resolve())): raise HTTPException(400)
