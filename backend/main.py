@@ -229,8 +229,10 @@ def tool_apply_diff(path, diff, *, session_dir):
             else:
                 i += 1
         t.parent.mkdir(parents=True, exist_ok=True)
-        t.write_text("".join(new_lines))
-        return {"success": True, "path": path}
+        result_text = "".join(new_lines)
+        t.write_text(result_text)
+        lines_changed = abs(len(new_lines) - len(original.splitlines(keepends=True)))
+        return {"success": True, "path": path, "lines": len(new_lines), "preview": result_text[:500]}
     except Exception as ex:
         return {"error": str(ex)}
 
@@ -409,6 +411,7 @@ RULES:
 - NEVER translate or repeat the user's message back to them.
 - If the user writes in Japanese, your ENTIRE response must be in Japanese (except code).
 - apply_diff for targeted edits; write_file for new/full-rewrite files
+- After apply_diff or write_file succeeds, do NOT read_file to verify — trust the result and report done.
 - read_file before editing existing files
 - User-uploaded files are saved to the `input/` folder. When the user mentions a file, check `input/` first.
 - run_command to execute, test, install packages
