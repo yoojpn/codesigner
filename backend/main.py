@@ -382,8 +382,9 @@ All file operations are relative to this directory.
 - web_search + fetch_url for docs/packages
 - copy_to_output to make files downloadable
 - Be concise. Show what changed. Explain steps briefly.
-- Do NOT translate or explain what the user said. Just respond to them.
-- Respond in the same language the user uses.
+- CRITICAL: Never start your response with English meta-commentary like "The user said...", "I should...", or translations. Output ONLY the direct response.
+- Do NOT translate or repeat back what the user said. Just respond.
+- Respond in the same language the user uses. If the user writes in Japanese, reply in Japanese only.
 """
 
 def auto_title(message: str) -> str:
@@ -395,16 +396,34 @@ def auto_title(message: str) -> str:
 
 MODELS = ["gemma-4-31b-it", "gemma-4-26b-a4b-it"]
 
+# デリミタ外に漏れるGemmaのメタコメント冒頭パターン
+# "The user said X (Y in Japanese). I should ..." のような前置きを除去
 def clean_text(text: str) -> str:
-    """
-    Gemma 4公式: thinkingは <|channel>thought\n...<channel|> で囲まれる
-    Thinking ONのとき: この部分を除去して返答だけを返す
-    Thinking OFFのとき: 26B/31Bは空の <|channel>thought\n<channel|> が出るので除去
-    """
-    # 公式デリミタによるthinking除去（DOTALLで複数行対応）
+    """Gemma4公式デリミタのthinking除去 + デリミタ外メタコメント前置き除去"""
+    # 公式デリミタによるthinking除去
     text = re.sub(r"<\|channel>thought.*?<channel\|>", "", text, flags=re.DOTALL)
-    # 念のため旧パターンも除去
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+
+    # デリミタ外に漏れた英語メタコメント前置きを行ベースで除去
+    # "The user said..." / "I should..." 等から始まり日本語が出るまでスキップ
+    result = []
+    skip = False
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not skip and re.match(
+            r"^(The user (said|asked|wrote|is|just|shared)|I should|I will|I need to|Let me|Responding|Note:)",
+            stripped, re.IGNORECASE
+        ):
+            skip = True
+        if skip:
+            jp = re.search(r"[\u3041-\u9fff\uff00-\uffef]", line)
+            if jp:
+                result.append(line[jp.start():])
+                skip = False
+        else:
+            result.append(line)
+
+    text = "\n".join(result)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
