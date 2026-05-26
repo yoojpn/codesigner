@@ -2,7 +2,7 @@ import os, json, asyncio, subprocess, shutil, httpx, re, uuid, sqlite3
 from pathlib import Path
 from datetime import datetime
 from contextlib import contextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -715,7 +715,7 @@ def download_file(path: str, chat_id: str = ""):
     return FileResponse(target, filename=target.name)
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...), chat_id: str = "", path: str = ""):
+async def upload_file(file: UploadFile = File(...), chat_id: str = Form(""), path: str = Form("")):
     chat = get_chat(chat_id)
     if not chat: raise HTTPException(404)
     session_dir = WORKSPACE / chat["session_dir"]
