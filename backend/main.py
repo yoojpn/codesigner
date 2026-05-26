@@ -88,6 +88,7 @@ def make_session_dir() -> Path:
     d = WORKSPACE / "sessions" / f"{ts}_{sid}"
     d.mkdir(parents=True, exist_ok=True)
     (d / "output").mkdir(exist_ok=True)
+    (d / "input").mkdir(exist_ok=True)
     return d
 
 def create_chat(title: str = "New Chat") -> dict:
@@ -386,6 +387,7 @@ RULES:
 - If the user writes in Japanese, your ENTIRE response must be in Japanese (except code).
 - apply_diff for targeted edits; write_file for new/full-rewrite files
 - read_file before editing existing files
+- User-uploaded files are saved to the `input/` folder. When the user mentions a file, check `input/` first.
 - run_command to execute, test, install packages
 - web_search + fetch_url for docs/packages
 - copy_to_output to make files downloadable
@@ -717,12 +719,14 @@ async def upload_file(file: UploadFile = File(...), chat_id: str = "", path: str
     chat = get_chat(chat_id)
     if not chat: raise HTTPException(404)
     session_dir = WORKSPACE / chat["session_dir"]
-    dest = (session_dir / (path or file.filename or "upload")).resolve()
+    # pathが指定されていない場合はinput/に保存
+    save_path = path or f"input/{file.filename or 'upload'}"
+    dest = (session_dir / save_path).resolve()
     if not str(dest).startswith(str(session_dir.resolve())): raise HTTPException(400)
     dest.parent.mkdir(parents=True, exist_ok=True)
     content = await file.read()
     dest.write_bytes(content)
-    return {"success": True, "size": len(content)}
+    return {"success": True, "size": len(content), "path": save_path, "filename": dest.name}
 
 @app.get("/health")
 def health():

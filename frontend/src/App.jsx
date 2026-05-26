@@ -674,16 +674,22 @@ export default function App() {
       fd.append('file', file)
       fd.append('chat_id', activeChatId)
       try {
-        await fetch(apiUrl('/api/upload'), { method: 'POST', body: fd })
-        uploaded.push(file.name)
-        refreshFiles()
+        const res = await fetch(apiUrl('/api/upload'), { method: 'POST', body: fd })
+        const data = await res.json()
+        if (data.success) {
+          uploaded.push(data.path || `input/${file.name}`)
+          refreshFiles()
+        }
       } catch {}
     }
     if (uploaded.length > 0) {
       setAttachments(prev => [...prev, ...uploaded])
-      // ファイル名をinputに追記（すでに入力があれば改行して追加）
-      const mention = uploaded.map(n => `@${n}`).join(' ')
-      setInput(prev => prev ? `${prev} ${mention}` : mention)
+      // アップロード完了をAIに自動通知して解説・処理を促す
+      const fileList = uploaded.map(p => `\`${p}\``).join(', ')
+      const notify = uploaded.length === 1
+        ? `${fileList} をinputフォルダにアップロードしました。`
+        : `${fileList} をinputフォルダにアップロードしました。`
+      setInput(prev => prev ? `${prev}\n${notify}` : notify)
       if (textareaRef.current) textareaRef.current.focus()
     }
   }
