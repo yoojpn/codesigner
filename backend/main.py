@@ -299,7 +299,7 @@ def to_json_safe(obj):
         except Exception:
             cleaned = repr(obj)
         cleaned = re.sub(r'[--]', '', cleaned)
-        return cleaned[:10000] + "...(truncated)" if len(cleaned) > 10000 else cleaned
+        return cleaned[:100000] + "...(truncated)" if len(cleaned) > 100000 else cleaned
     if isinstance(obj, dict):
         return {str(k): to_json_safe(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
