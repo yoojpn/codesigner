@@ -189,7 +189,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--f
 .edit-cancel-btn{background:var(--bg4);color:var(--text2);border:1px solid var(--border2);padding:4px 10px;border-radius:5px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:4px}
 .edit-cancel-btn:hover{color:var(--red);border-color:var(--red)}
 
-/* Retry button */
+.streaming-text{white-space:pre-wrap;word-break:break-word;line-height:1.7}
+.streaming-text::after{content:'▋';display:inline-block;animation:blink .9s step-end infinite;color:var(--accent);margin-left:1px}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+
 .retry-btn{background:var(--bg3);border:1px solid var(--border2);color:var(--text2);padding:4px 10px;border-radius:5px;cursor:pointer;font-size:12px;display:flex;align-items:center;gap:4px;transition:all .15s}
 .retry-btn:hover{border-color:var(--accent);color:var(--accent)}
 
