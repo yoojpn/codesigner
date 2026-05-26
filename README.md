@@ -1,75 +1,73 @@
-# Codesigner
+# Codesigner ⌘
 
-AI coding assistant powered by Gemma 4 31B (Google AI Studio), with a VS Code-inspired web UI.
+自分専用AIコーディングエージェント。Gemma 4 31B × Google AI Studio無料枠で動作。
 
-## Features
-- 💬 Chat with an AI that reads/writes/edits files, runs commands, and searches the web
-- 📝 Monaco Editor (VS Code engine) for viewing and editing files
-- 🔄 Unified diff display with syntax highlighting
-- ✅ Command approval workflow — review diffs and commands before execution
-- 🌐 Web search + URL fetch built-in
-- 📥 Output directory with one-click file download from the web UI
-- 📎 File attachment — drag & drop local files as context for the AI
-- 🔑 4-key API rotation for maximum free-tier usage
+## 構成
 
-## Quick Start (Oracle Cloud VM)
+```
+codesigner.site        → Cloudflare Pages（WebUI）
+api.codesigner.site    → Oracle Cloud VM（バックエンド）
+```
 
-### 1. Clone & configure backend
+## 機能
+
+- 💬 **チャット管理** — ChatGPTライクな複数チャット、履歴はSQLiteに永続保存
+- 🗂️ **セッションサンドボックス** — チャットごとに独立した作業フォルダ（削除すると自動消去）
+- 📝 **ファイル編集** — write_file / apply_diff（unified diff）
+- ⚡ **コマンド実行** — sudo/外部アクセス時のみ承認、それ以外は自動実行
+- 🌐 **Web検索 + URL取得** — ドキュメント参照に活用
+- ⬇️ **ファイルダウンロード** — copy_to_outputでUIからDL
+- 🔑 **APIキーローテーション** — 最大4キーで無料枠を最大活用
+
+## セットアップ（Oracle VM）
+
 ```bash
-git clone https://github.com/yoojpn/codesigner
-cd codesigner/backend
-pip3 install -r requirements.txt
+# 依存インストール
+cd backend
+pip install -r requirements.txt
+
+# 環境変数設定
 cp .env.example .env
-# Edit .env — add comma-separated GEMMA_API_KEYS
-```
+# .envを編集してGEMMA_API_KEYSに最大4つのキーをカンマ区切りで設定
 
-### 2. Start backend
-```bash
+# 起動
 ./start.sh
-# or: uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-### 3. Build frontend (Cloudflare Pages)
+## デプロイ
+
+### Oracle VM（バックエンド）
+
 ```bash
-cd frontend
-npm install
-npm run build
-# Upload dist/ to Cloudflare Pages
-# Set environment variable: VITE_WS_URL=wss://your-domain.com
+# nginx設定
+sudo apt install nginx certbot python3-certbot-nginx
+sudo certbot --nginx -d api.codesigner.site
+
+# systemdサービス登録
+sudo cp codesigner.service /etc/systemd/system/
+sudo systemctl enable --now codesigner
 ```
 
-### 4. nginx (HTTPS + WebSocket proxy)
-```nginx
-server {
-    listen 443 ssl;
-    server_name your-domain.com;
-    # ssl via: certbot --nginx -d your-domain.com
+### Cloudflare Pages（フロントエンド）
 
-    location /ws {
-        proxy_pass http://localhost:8000/ws;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_read_timeout 300s;
-    }
-    location /api {
-        proxy_pass http://localhost:8000;
-    }
-    location / {
-        proxy_pass http://localhost:8000;
-    }
-}
-```
+| 設定項目 | 値 |
+|---|---|
+| Root directory | `frontend` |
+| Build command | `npm run build` |
+| Build output | `dist` |
+| 環境変数 | `VITE_BACKEND_URL=https://api.codesigner.site` |
 
-## Environment Variables
-| Variable | Default | Description |
-|---|---|---|
-| `GEMMA_API_KEYS` | — | Comma-separated Google AI Studio API keys |
-| `WORKSPACE` | `/workspace` | Path to workspace directory |
-| `PORT` | `8000` | Server port |
+## 承認フロー
 
-## Downloading Files
-The AI can call `copy_to_output(path)` to copy any workspace file to the **Downloads** panel in the sidebar. You can also download any file directly from the file tree.
+| 操作 | 承認 |
+|---|---|
+| ファイル読み書き（セッション内） | 自動 |
+| コマンド実行（通常） | 自動 |
+| sudo / su / pkexec | **要承認** |
+| セッション外へのファイルアクセス | **要承認** |
 
-## API Rotation
-Add up to 4 Google AI Studio keys to `GEMMA_API_KEYS` (comma-separated). The backend rotates keys automatically to maximize free-tier throughput (Gemma 4 31B: 1,500 RPD × 4 keys = 6,000 req/day).
+## モデル
+
+- **Gemma 4 31B** (`gemma-4-31b-it`) — Google AI Studio無料枠
+- RPD: 1,500/キー × 最大4キー = **6,000リクエスト/日**
+- TPM: 無制限
