@@ -319,6 +319,9 @@ All file operations are relative to this directory.
 - web_search + fetch_url for docs/packages
 - copy_to_output to make files downloadable
 - Be concise. Show what changed. Explain steps briefly.
+- IMPORTANT: Do NOT include any internal reasoning, thinking process, or meta-commentary in your responses. Reply directly and concisely.
+- Do NOT translate or explain what the user said. Just respond to them.
+- Respond in the same language the user uses.
 """
 
 def auto_title(message: str) -> str:
