@@ -1067,8 +1067,8 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
             if name == "respond_to_user":
                 msg_text = args.get("message", "")
                 if msg_text:
-                    for ch in msg_text:
-                        await ws.send_json({"type": "text_chunk", "text": ch})
+                    await ws.send_json({"type": "stream", "content": msg_text})
+                    await ws.send_json({"type": "stream_end"})
                     text = msg_text
                 save_message(chat_id, "assistant", msg_text)
                 tool_response_parts.append(types.Part(
