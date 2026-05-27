@@ -290,7 +290,8 @@ def tool_apply_diff(path, diff, *, session_dir):
                             found = True
                             break
                     if not found:
-                        errors.append(f"SEARCHブロック未発見:\n{search_block[:200]}")
+                        preview = search_block[:200]
+                        errors.append(f"SEARCHブロック未発見:\n{preview}")
             if errors and applied == 0:
                 marker.unlink(missing_ok=True)
                 return {"error": "\n".join(errors)}
