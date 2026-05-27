@@ -697,6 +697,8 @@ async def dispatch_tool(name, args, session_dir, ws=None):
         return await tool_web_search(query=args["query"])
     if name == "fetch_url":
         return await tool_fetch_url(url=args["url"])
+    if name == "respond_to_user":
+        return {"delivered": True}
     return {"error": f"Unknown tool: {name}"}
 
 # ---- Tool schemas ----
@@ -733,6 +735,9 @@ TOOL_DEFS = [types.Tool(function_declarations=[
         parameters=types.Schema(type="OBJECT",properties={"url":types.Schema(type="STRING")},required=["url"])),
     types.FunctionDeclaration(name="copy_to_output",description="Copy file to output for download",
         parameters=types.Schema(type="OBJECT",properties={"path":types.Schema(type="STRING"),"output_name":types.Schema(type="STRING")},required=["path"])),
+    types.FunctionDeclaration(name="respond_to_user",
+        description="Send a text reply to the user. Use this for ALL responses: answers to questions, progress updates, summaries, error explanations, and any other message. You MUST call this tool to send any text to the user — plain text output is NOT delivered.",
+        parameters=types.Schema(type="OBJECT",properties={"message":types.Schema(type="STRING",description="The message to send to the user")},required=["message"])),
 ])]
 
 AUTO_THINKING_KEYWORDS = [
@@ -930,7 +935,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                         system_instruction=make_system_prompt(session_dir, thinking_on=thinking_on),
                         tools=TOOL_DEFS,
                         tool_config=types.ToolConfig(
-                            function_calling_config=types.FunctionCallingConfig(mode="AUTO")
+                            function_calling_config=types.FunctionCallingConfig(mode="ANY")
                         ),
                         temperature=0.3,
                         thinking_config=thinking_config,
@@ -1053,6 +1058,20 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     continue
 
             result = await dispatch_tool(name, args, session_dir, ws=ws)
+
+            # respond_to_user: テキストをフロントに送信してループ終了
+            if name == "respond_to_user":
+                msg_text = args.get("message", "")
+                if msg_text:
+                    for ch in msg_text:
+                        await ws.send_json({"type": "text_chunk", "text": ch})
+                    text = msg_text
+                save_message(chat_id, "assistant", msg_text)
+                tool_response_parts.append(types.Part(
+                    function_response=types.FunctionResponse(name=name, response={"delivered": True})
+                ))
+                messages.append(types.Content(role="user", parts=tool_response_parts))
+                break
 
             # write_file / apply_diff 成功時: output/ へ自動コピー
             if result.get("success") and name in ("write_file", "apply_diff"):
