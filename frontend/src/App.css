@@ -470,3 +470,12 @@ a:hover {
   font-weight: 500;
   min-width: 80px;
 }
+
+/* ---- Diff Summary pending state ---- */
+.diff-summary-row.pending {
+  opacity: 0.7;
+}
+.diff-summary-spinner {
+  color: var(--accent);
+  flex-shrink: 0;
+}

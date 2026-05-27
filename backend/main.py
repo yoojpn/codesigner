@@ -223,8 +223,11 @@ def tool_apply_diff(path, diff, *, session_dir):
         return {"error": "already_applied", "message": "This diff has already been applied. Do not apply again."}
     marker.touch()
 
+    def normalize_line(l):
+        return ' '.join(l.split())
+
     def _find_block(file_lines, search_lines, hint=None):
-        """完全一致 → strip一致 → fuzzy の順で検索"""
+        """完全一致 → strip一致 → 空白正規化 → fuzzy の順で検索"""
         n = len(search_lines)
         if n == 0:
             return hint or 0
@@ -239,26 +242,115 @@ def tool_apply_diff(path, diff, *, session_dir):
                    file_lines[i+k].rstrip("\n\r") == search_lines[k].rstrip("\n\r")
                    for k in range(n)):
                 return i
-
-        # 段階2: strip一致（インデント違い吸収）
+        # 段階2: strip一致
         for i in search_order:
             if all(i+k < len(file_lines) and
                    file_lines[i+k].rstrip("\n\r").strip() == search_lines[k].rstrip("\n\r").strip()
                    for k in range(n)):
                 return i
-
-        # 段階3: fuzzy（ratio > 0.65）
-        needle = "".join(l.rstrip("\n\r").strip() for l in search_lines)
-        best_i, best_ratio = None, 0.65
+        # 段階3: 空白正規化（バッククォート・${}など特殊文字を含む行に有効）
         for i in search_order:
-            window = "".join(file_lines[i+k].rstrip("\n\r").strip()
+            if all(i+k < len(file_lines) and
+                   normalize_line(file_lines[i+k]) == normalize_line(search_lines[k])
+                   for k in range(n)):
+                return i
+        # 段階4: fuzzy（ratio > 0.72）
+        needle = "".join(normalize_line(l) for l in search_lines)
+        best_i, best_ratio = None, 0.72
+        for i in search_order:
+            window = "".join(normalize_line(file_lines[i+k])
                              for k in range(n) if i+k < len(file_lines))
             ratio = difflib.SequenceMatcher(None, needle, window).ratio()
             if ratio > best_ratio:
                 best_ratio, best_i = ratio, i
         return best_i
 
+    def _make_hint(search_lines, file_lines):
+        """失敗時にAIへ渡す具体的なヒントを生成"""
+        if not search_lines:
+            return ""
+        first = search_lines[0].strip() if search_lines else ""
+        close = difflib.get_close_matches(first, [l.strip() for l in file_lines], n=1, cutoff=0.35)
+        if close:
+            idx = next((i for i, l in enumerate(file_lines) if l.strip() == close[0]), -1)
+            return f"\nHINT: The closest line found in the file is at line {idx+1}: {close[0][:120]!r}\nUse read_file to get the exact current content, then retry with corrected SEARCH block."
+        return f"\nHINT: First SEARCH line {first[:80]!r} not found. Use read_file to check the current content."
+
     try:
+        # ── 形式0: V4A patch (*** Begin Patch) ──────────────────────────
+        if "*** Begin Patch" in diff or "*** Update File" in diff:
+            text = original
+            lines_added = lines_removed = 0
+            # V4A: @@ <context_anchor> ヘッダ + +/-/space lines
+            # contextアンカー行を含む全hunkを処理
+            file_lines = text.splitlines()
+            result_lines = list(file_lines)
+            offset = 0
+            hunk_pat = re.compile(r'^@@\s*(.*)', re.MULTILINE)
+            diff_body_lines = diff.splitlines()
+            i = 0
+            hunk_errors = []
+            while i < len(diff_body_lines):
+                line = diff_body_lines[i]
+                if line.startswith('@@'):
+                    # アンカー: @@ の後のテキストがコンテキスト
+                    anchor_text = line[2:].strip()
+                    hunk_body = []
+                    i += 1
+                    while i < len(diff_body_lines) and not diff_body_lines[i].startswith('@@') \
+                          and not diff_body_lines[i].startswith('*** '):
+                        hunk_body.append(diff_body_lines[i])
+                        i += 1
+                    # context行（空白で始まる）とsearch行（-）を抽出
+                    search_lines = [l[1:] if l and l[0] in (' ', '-') else l
+                                    for l in hunk_body if l and l[0] != '+']
+                    # アンカーテキストがある場合はそこを起点に探す
+                    hint = None
+                    if anchor_text:
+                        for li, fl in enumerate(result_lines):
+                            if anchor_text.strip() and anchor_text.strip() in fl:
+                                hint = li + offset
+                                break
+                    best_pos = _find_block(result_lines, search_lines, hint=hint)
+                    if best_pos is None:
+                        hunk_errors.append(f"V4A hunk '{anchor_text[:60]}': match failed" + _make_hint(search_lines, result_lines))
+                        continue
+                    j = best_pos
+                    for hl in hunk_body:
+                        if not hl:
+                            j += 1
+                            continue
+                        prefix = hl[0]
+                        content = hl[1:]
+                        if prefix == '-':
+                            if j < len(result_lines):
+                                del result_lines[j]
+                                offset -= 1
+                                lines_removed += 1
+                        elif prefix == '+':
+                            result_lines.insert(j, content)
+                            j += 1
+                            offset += 1
+                            lines_added += 1
+                        else:  # context
+                            j += 1
+                else:
+                    i += 1
+            if hunk_errors and lines_added == 0 and lines_removed == 0:
+                marker.unlink(missing_ok=True)
+                return {"error": "V4A patch failed:\n" + "\n".join(hunk_errors),
+                        "file_content_preview": "\n".join(original.splitlines()[:30])}
+            t.parent.mkdir(parents=True, exist_ok=True)
+            result_text = "\n".join(result_lines)
+            if original.endswith("\n"):
+                result_text += "\n"
+            t.write_text(result_text)
+            res = {"success": True, "path": path, "lines": len(result_lines),
+                   "lines_changed": lines_added, "lines_removed": lines_removed, "format": "v4a"}
+            if hunk_errors:
+                res["warnings"] = hunk_errors
+            return res
+
         # ── 形式1: SEARCH/REPLACE ブロック ──────────────────────────────
         if "<<<<<<" in diff and "=======" in diff:
             text = original
@@ -269,66 +361,34 @@ def tool_apply_diff(path, diff, *, session_dir):
             matches = list(pattern.finditer(diff))
             if not matches:
                 marker.unlink(missing_ok=True)
-                return {"error": "SEARCH/REPLACE形式のパースに失敗。<<<<<<< SEARCH / ======= / >>>>>>> REPLACE の形式を確認してください。"}
+                return {"error": "SEARCH/REPLACE parse failed. Use: <<<<<<< SEARCH / ======= / >>>>>>> REPLACE"}
             applied, errors = 0, []
+            fl = text.splitlines()
             for m in matches:
                 search_block = m.group(1)
                 replace_block = m.group(2)
+                sl = search_block.splitlines()
+                found = False
+                # 完全一致
                 if search_block in text:
                     text = text.replace(search_block, replace_block, 1)
                     applied += 1
+                    found = True
                 else:
-                    # strip一致で探す（バッククォート・特殊文字対応）
-                    sl = search_block.splitlines()
                     fl = text.splitlines()
-                    found = False
-                    import unicodedata
-                    def normalize_line(l):
-                        # 空白・タブを正規化、制御文字除去
-                        return ' '.join(l.split())
-                    for i in range(len(fl) - len(sl) + 1):
-                        # 段階1: strip一致
-                        if all(fl[i+k].strip() == sl[k].strip() for k in range(len(sl))):
-                            actual = "\n".join(fl[i:i+len(sl)])
-                            text = text.replace(actual, replace_block, 1)
-                            applied += 1
-                            found = True
-                            break
-                    if not found:
-                        for i in range(len(fl) - len(sl) + 1):
-                            # 段階2: 空白正規化一致
-                            if all(normalize_line(fl[i+k]) == normalize_line(sl[k]) for k in range(len(sl))):
-                                actual = "\n".join(fl[i:i+len(sl)])
-                                text = text.replace(actual, replace_block, 1)
-                                applied += 1
-                                found = True
-                                break
-                    if not found:
-                        import difflib
-                        # 段階3: fuzzy（最も近い行を探して周辺に絞る）
-                        needle_flat = ' '.join(normalize_line(l) for l in sl)
-                        best_i, best_ratio = None, 0.75
-                        for i in range(len(fl) - len(sl) + 1):
-                            window_flat = ' '.join(normalize_line(fl[i+k]) for k in range(len(sl)) if i+k < len(fl))
-                            ratio = difflib.SequenceMatcher(None, needle_flat, window_flat).ratio()
-                            if ratio > best_ratio:
-                                best_ratio, best_i = ratio, i
-                        if best_i is not None:
-                            actual = "\n".join(fl[best_i:best_i+len(sl)])
-                            text = text.replace(actual, replace_block, 1)
-                            applied += 1
-                            found = True
-                    if not found:
-                        # AIへのヒント: 実際のファイルで近い行を探して提示
-                        import difflib
-                        needle_first = sl[0].strip() if sl else ''
-                        close = difflib.get_close_matches(needle_first, [l.strip() for l in fl], n=1, cutoff=0.4)
-                        hint = f" (近い行: {close[0][:100]!r})" if close else ""
-                        preview = search_block[:200]
-                        errors.append(f"SEARCHブロック未発見{hint}:\n{preview}")
+                    best_pos = _find_block(fl, sl)
+                    if best_pos is not None:
+                        actual = "\n".join(fl[best_pos:best_pos+len(sl)])
+                        text = text.replace(actual, replace_block, 1)
+                        applied += 1
+                        found = True
+                if not found:
+                    fl_now = text.splitlines()
+                    errors.append(f"SEARCH block not found:{_make_hint(sl, fl_now)}\nSEARCH was:\n{search_block[:300]}")
             if errors and applied == 0:
                 marker.unlink(missing_ok=True)
-                return {"error": "\n".join(errors)}
+                return {"error": "\n".join(errors),
+                        "file_content_preview": "\n".join(original.splitlines()[:30])}
             t.parent.mkdir(parents=True, exist_ok=True)
             t.write_text(text)
             result = {"success": True, "path": path, "lines": len(text.splitlines()),
@@ -347,33 +407,40 @@ def tool_apply_diff(path, diff, *, session_dir):
             if line.startswith("@@"):
                 m = re.search(r"-(\d+)(?:,\d+)?", line)
                 hint = int(m.group(1)) - 1 if m else None
+                # V4A風: @@ の後にコンテキスト文字列があればアンカーとして使う
+                anchor = re.sub(r"@@\s*-\d+(?:,\d+)?\s*\+\d+(?:,\d+)?\s*@@", "", line).strip()
                 hunk_body = []
                 i += 1
                 while i < len(diff_lines) and not diff_lines[i].startswith("@@"):
                     if not diff_lines[i].startswith(("---", "+++")):
                         hunk_body.append(diff_lines[i])
                     i += 1
-                hunks.append((hint, hunk_body))
+                hunks.append((hint, anchor, hunk_body))
             else:
                 i += 1
 
         if not hunks:
             marker.unlink(missing_ok=True)
-            return {"error": "diffフォーマット不明。unified diff (@@ ... @@) か SEARCH/REPLACE 形式で記述してください。"}
+            return {"error": "Unknown diff format. Use: unified diff (@@ ... @@), SEARCH/REPLACE, or V4A (*** Begin Patch)"}
 
         new_lines = list(original.splitlines(keepends=True))
         offset = 0
         hunk_errors = []
 
-        for hunk_idx, (hint, hunk_body) in enumerate(hunks):
+        for hunk_idx, (hint, anchor, hunk_body) in enumerate(hunks):
             search_lines = [l[1:] if l.startswith((" ", "-")) else l
                             for l in hunk_body if not l.startswith("+")]
             hint_adj = (hint + offset) if hint is not None else None
+            # アンカー文字列があればヒントを補正
+            if anchor:
+                for li, fl in enumerate(new_lines):
+                    if anchor.strip() and anchor.strip() in fl:
+                        hint_adj = li
+                        break
             best_pos = _find_block(new_lines, search_lines, hint=hint_adj)
 
             if best_pos is None:
-                preview = ''.join(search_lines[:5])[:200]
-                hunk_errors.append(f"hunk {hunk_idx+1}: マッチ失敗。対象:\n{preview}")
+                hunk_errors.append(f"hunk {hunk_idx+1}: match failed" + _make_hint(search_lines, new_lines))
                 continue
 
             j = best_pos
@@ -392,7 +459,8 @@ def tool_apply_diff(path, diff, *, session_dir):
 
         if hunk_errors and len(hunk_errors) == len(hunks):
             marker.unlink(missing_ok=True)
-            return {"error": "全hunk適用失敗:\n" + "\n".join(hunk_errors)}
+            return {"error": "All hunks failed:\n" + "\n".join(hunk_errors),
+                    "file_content_preview": "\n".join(original.splitlines()[:30])}
 
         t.parent.mkdir(parents=True, exist_ok=True)
         result_text = "".join(new_lines)
@@ -610,38 +678,84 @@ def should_think(message: str) -> bool:
 
 def make_system_prompt(session_dir: Path, thinking_on: bool = False) -> str:
     rel = str(session_dir.relative_to(WORKSPACE))
-    prompt = """You are Codesigner, an expert AI coding assistant on a Linux VM.
-Session working directory: /workspace/""" + rel + """
-All file operations are relative to this directory.
+    prompt = "You are Codesigner — a senior software engineer and AI coding agent running on a Linux VM.\n"
+    prompt += "Session working directory: /workspace/" + rel + "\n"
+    prompt += """All file paths are relative to this directory.
 
-RULES:
-- Your response must begin IMMEDIATELY with the answer. No preamble, no meta-commentary.
-- NEVER output lines like "User said:", "The user wrote:", "* User said:", "I should", "Role:", "Constraint:", "Language:" or any analysis of the conversation context.
-- NEVER translate or repeat the user's message back to them.
-- If the user writes in Japanese, your ENTIRE response must be in Japanese (except code).
-- NEVER output tool calls as JSON text. ALWAYS use the actual function calling mechanism — never write {"tool": ...} in your response text.
-- NEVER output diff text in chat. ALWAYS call the apply_diff tool directly — no exceptions.
-- apply_diff supports TWO formats:
-  1) unified diff: standard @@ -N,M +N,M @@ hunks (preferred for large changes)
-  2) SEARCH/REPLACE: use this for targeted edits:
-     <<<<<<< SEARCH
-     exact lines to find
-     =======
-     replacement lines
-     >>>>>>> REPLACE
-- For SEARCH/REPLACE: the SEARCH block must match the file exactly (whitespace-tolerant).
-- Prefer SEARCH/REPLACE for small targeted edits; unified diff for multi-hunk changes.
-- NEVER output file contents in chat. ALWAYS call write_file tool directly.
-- If apply_diff returns an error, immediately retry with a corrected diff that fixes the specific error. Keep retrying until success.
-- CRITICAL: When you have multiple files to edit, edit ALL of them before writing your final response. Do NOT stop after editing just one file. Keep calling apply_diff/write_file for every file that needs changes.
-- Only AFTER all edits are done, write a short summary of what was changed. This summary signals you are finished.
+═══════════════════════════════════════════════════════
+RESPONSE QUALITY — NON-NEGOTIABLE
+═══════════════════════════════════════════════════════
+- Write PRODUCTION-READY, COMPLETE, IMMEDIATELY RUNNABLE code. Always.
+- NEVER output placeholder code: no "// TODO", no "# implement here", no "/* ... */",
+  no "pass  # add logic", no "example only", no stub functions with empty bodies.
+- NEVER say "here's a simplified version" or "for illustration purposes".
+  If you are uncertain about a detail, make a reasonable implementation decision.
+- Every function must have a real implementation. Every file must be complete.
+- Code must handle errors, edge cases, and real-world inputs.
+- If the user writes in Japanese, respond entirely in Japanese (except code identifiers).
+- Begin your response IMMEDIATELY with the answer. No preamble, no meta-commentary.
+- NEVER output lines like "User said:", "The user wrote:", "I should", "Role:", "Constraint:".
+
+═══════════════════════════════════════════════════════
+FILE EDITING — RULES
+═══════════════════════════════════════════════════════
+- ALWAYS read_file before editing an existing file. Never assume content.
+- NEVER output file contents or diffs in chat. Use tools exclusively.
+- NEVER output tool calls as JSON text — always use the function calling mechanism.
+- When editing multiple files: call apply_diff/write_file for EVERY file before writing
+  your summary. Do not stop after one file.
 - After apply_diff or write_file succeeds, do NOT read_file to verify — trust the result.
-- read_file before editing existing files.
-- User-uploaded files are saved to the `input/` folder. When the user mentions a file, check `input/` first.
-- run_command to execute, test, install packages.
-- web_search + fetch_url for docs/packages.
-- copy_to_output to make a specific file downloadable by the user.
-- Be concise. List what files were changed and what changed in each.
+
+═══════════════════════════════════════════════════════
+PATCH FORMAT — USE V4A (preferred) or SEARCH/REPLACE
+═══════════════════════════════════════════════════════
+PREFERRED: V4A patch format (most reliable, handles special chars like ${}, backticks):
+
+  *** Begin Patch
+  *** Update File: path/to/file.js
+  @@ functionName or class name context anchor
+   context line (space prefix)
+  -line to remove
+  +line to add
+   context line
+  *** End Patch
+
+  Rules for V4A:
+  - @@ line: write the function/class name or a unique nearby string as the anchor.
+    Do NOT use line numbers. The anchor locates the edit region by content matching.
+  - Use 2-3 context lines (space prefix) around edits to anchor position.
+  - Files containing ${...}, backtick strings, or special chars MUST use V4A or write_file.
+  - One *** Begin Patch can contain multiple *** Update File sections.
+  - To create: use *** Add File: path  then + lines.
+  - To delete: use *** Delete File: path
+
+ALTERNATIVE: SEARCH/REPLACE (for simple targeted edits without special chars):
+  <<<<<<< SEARCH
+  exact lines to find (must match file exactly, whitespace-tolerant)
+  =======
+  replacement lines
+  >>>>>>> REPLACE
+
+FALLBACK: write_file — use when creating new files or when the whole file needs rewriting.
+
+═══════════════════════════════════════════════════════
+DIFF FAILURE RECOVERY
+═══════════════════════════════════════════════════════
+- If apply_diff returns an error with file_content_preview: read the preview, then
+  immediately call read_file to get the full current content, then retry with a
+  corrected patch that matches the actual file content exactly.
+- Never give up after one failure. Read → fix → retry.
+- If a file contains lots of ${...} or backtick template literals, switch to write_file
+  for that file (rewrite the whole thing) rather than patching.
+
+═══════════════════════════════════════════════════════
+OTHER TOOLS
+═══════════════════════════════════════════════════════
+- run_command: execute, test, build, install packages.
+- web_search + fetch_url: look up docs, packages, APIs.
+- copy_to_output: make a file downloadable by the user.
+- User uploads are in the input/ folder.
+- Be concise in summaries: list changed files and what changed.
 """
     return prompt
 
@@ -667,9 +781,11 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
     messages = history + [types.Content(role="user", parts=[types.Part(text=user_message)])]
     loop = asyncio.get_event_loop()
 
-    # diff失敗カウンタ（同一hunkの無限リトライ防止）
+    # diff失敗カウンタ（無限ループ防止）
     diff_fail_count = 0
-    MAX_DIFF_RETRIES = 3
+    diff_fail_per_file: dict = {}  # ファイルごとの失敗カウント
+    MAX_DIFF_RETRIES = 5  # 全体上限
+    MAX_PER_FILE = 3       # 同一ファイルの上限
 
     for _ in range(30):
         response = None
@@ -830,7 +946,30 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
             # apply_diffのエラーはUIに出さず、AIへの内部フィードバックのみ
             if name == "apply_diff" and result.get("error") and result.get("error") != "already_applied":
                 # UIには送らない（AIのhistoryには積む）
-                pass
+                # ファイルの現在の内容を自動でフィードバックに含める
+                file_path = args.get("path", "")
+                auto_content = ""
+                if file_path:
+                    try:
+                        src = session_dir / file_path
+                        if src.exists():
+                            content = src.read_text(errors="replace")
+                            auto_content = f"\n\nCurrent file content of {file_path}:\n```\n{content[:8000]}\n```\nPlease use this exact content to construct a correct patch."
+                    except Exception:
+                        pass
+                # tool_response_partsにエラー+内容を積む（AIへのフィードバック）
+                enriched = sanitize_result(result, max_len=100000)
+                if auto_content and isinstance(enriched, dict):
+                    enriched = dict(enriched)
+                    enriched["current_file_content"] = auto_content
+                tool_response_parts.append(types.Part(
+                    function_response=types.FunctionResponse(name=name, response=enriched)
+                ))
+                # 失敗カウントを更新
+                diff_fail_count += 1
+                diff_fail_per_file[file_path] = diff_fail_per_file.get(file_path, 0) + 1
+                has_diff_error = True
+                continue  # 通常のtool_response_parts追加をスキップ
             else:
                 await ws.send_json({"type": "tool_result", "tool": name, "result": result})
             max_len = 500000 if name == "read_file" else 100000
@@ -838,20 +977,18 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                 function_response=types.FunctionResponse(name=name, response=sanitize_result(result, max_len=max_len))
             ))
 
-            # diff失敗検出
-            if name == "apply_diff" and result.get("error") and result.get("error") != "already_applied":
-                has_diff_error = True
-                diff_fail_count += 1
-
             # diff成功でカウンタリセット
             if name == "apply_diff" and result.get("success"):
                 diff_fail_count = 0
+                file_path = args.get("path", "")
+                if file_path in diff_fail_per_file:
+                    del diff_fail_per_file[file_path]
 
         messages.append(types.Content(role="user", parts=tool_response_parts))
 
         # diff失敗が多すぎる場合は終了
         if diff_fail_count >= MAX_DIFF_RETRIES:
-            msg = "diff適用を3回試みましたが失敗しました。ファイルの内容を確認して別のアプローチを検討してください。"
+            msg = "複数のdiff適用に繰り返し失敗しました。対象ファイルを確認し、write_fileで全体を書き直すアプローチを検討してください。"
             save_message(chat_id, "assistant", msg)
             await ws.send_json({"type": "stream", "content": msg})
             await ws.send_json({"type": "stream_end"})

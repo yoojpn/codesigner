@@ -602,17 +602,22 @@ function MessageList({ messages, onRetry, onEditSend, activeChatId }) {
               const filename = path.split('/').pop()
               const total = (info.added + info.removed) || 1
               const addSegs = Math.round((info.added / total) * 8)
+              const isPending = info.status === 'pending'
               return (
-                <div key={path} className="diff-summary-row">
-                  <Check size={11} className="diff-summary-check" />
+                <div key={path} className={`diff-summary-row ${isPending ? 'pending' : ''}`}>
+                  {isPending
+                    ? <Loader2 size={11} className="diff-summary-spinner spin" />
+                    : <Check size={11} className="diff-summary-check" />}
                   <span className="diff-summary-file">{filename}</span>
                   <span className="diff-stat-add">+{info.added}</span>
                   <span className="diff-stat-del"> −{info.removed}</span>
-                  <span className="diff-stat-bar" style={{marginLeft:4}}>
-                    {Array.from({ length: 8 }).map((_, si) => (
-                      <span key={si} className={`diff-stat-seg ${si < addSegs ? 'add' : 'del'}`} />
-                    ))}
-                  </span>
+                  {!isPending && (
+                    <span className="diff-stat-bar" style={{marginLeft:4}}>
+                      {Array.from({ length: 8 }).map((_, si) => (
+                        <span key={si} className={`diff-stat-seg ${si < addSegs ? 'add' : 'del'}`} />
+                      ))}
+                    </span>
+                  )}
                 </div>
               )
             })}
@@ -798,8 +803,36 @@ export default function App() {
       setMessages(prev => [...prev.filter(m => m.type !== 'thinking' && m.type !== 'streaming'), { type: 'text', content: msg.content }])
     })
     on('tool_call', (msg) => {
-      // apply_diffのtool_callは表示しない（tool_resultで集約表示する）
-      if (msg.tool === 'apply_diff') return
+      // apply_diffのtool_callはオプティミスティック表示（行数を先出し）
+      if (msg.tool === 'apply_diff') {
+        const diffText = msg.args?.diff || ''
+        const path = msg.args?.path || ''
+        const lines = diffText.split('\n')
+        const added = lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length
+        const removed = lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length
+        setMessages(prev => {
+          const withoutThinking = prev.filter(m => m.type !== 'thinking')
+          const lastDiffIdx = [...withoutThinking].map((m, i) => ({ m, i }))
+            .filter(({ m }) => m.type === 'diff_summary').pop()?.i ?? -1
+          if (lastDiffIdx >= 0) {
+            const prev2 = [...withoutThinking]
+            const summary = { ...prev2[lastDiffIdx] }
+            const existing = summary.files[path] || { added: 0, removed: 0 }
+            summary.files = {
+              ...summary.files,
+              [path]: { added: existing.added + added, removed: existing.removed + removed, status: 'pending' }
+            }
+            prev2[lastDiffIdx] = summary
+            return prev2
+          } else {
+            return [...withoutThinking, {
+              type: 'diff_summary',
+              files: { [path]: { added, removed, status: 'pending' } }
+            }]
+          }
+        })
+        return
+      }
       setMessages(prev => [...prev.filter(m => m.type !== 'thinking'), { type: 'tool_call', tool: msg.tool, args: msg.args }])
     })
     on('cmd_stream', (msg) => {
@@ -816,32 +849,53 @@ export default function App() {
       setMessages(prev => {
         const withoutStreaming = prev.filter(m => m.type !== 'cmd_streaming')
 
-        // apply_diffの成功はファイルごとに累積してまとめる
-        if (msg.tool === 'apply_diff' && msg.result?.success) {
-          const path = msg.result.path || ''
-          const added = msg.result.lines_changed ?? 0
-          const removed = msg.result.lines_removed ?? 0
-          // 既存のdiff_summaryメッセージを探す（直近のthinking/streaming以外の末尾）
-          const lastDiffIdx = [...withoutStreaming].map((m, i) => ({ m, i }))
-            .filter(({ m }) => m.type === 'diff_summary').pop()?.i ?? -1
-          if (lastDiffIdx >= 0) {
-            // ファイルごとに累積
-            const prev2 = [...withoutStreaming]
-            const summary = { ...prev2[lastDiffIdx] }
-            const existing = summary.files[path] || { added: 0, removed: 0 }
-            summary.files = {
-              ...summary.files,
-              [path]: { added: existing.added + added, removed: existing.removed + removed, status: 'ok' }
+        // apply_diffの結果でdiff_summaryを確定
+        if (msg.tool === 'apply_diff') {
+          const path = msg.result?.path || ''
+          if (msg.result?.success) {
+            const added = msg.result.lines_changed ?? 0
+            const removed = msg.result.lines_removed ?? 0
+            // pendingエントリを確定値で上書き
+            const lastDiffIdx = [...withoutStreaming].map((m, i) => ({ m, i }))
+              .filter(({ m }) => m.type === 'diff_summary').pop()?.i ?? -1
+            if (lastDiffIdx >= 0) {
+              const prev2 = [...withoutStreaming]
+              const summary = { ...prev2[lastDiffIdx] }
+              const existing = summary.files[path] || { added: 0, removed: 0 }
+              // 既にpendingで表示されてた分があればそれを確定値で置換
+              summary.files = {
+                ...summary.files,
+                [path]: { added: existing.status === 'pending' ? added : existing.added + added,
+                          removed: existing.status === 'pending' ? removed : existing.removed + removed,
+                          status: 'ok' }
+              }
+              prev2[lastDiffIdx] = summary
+              return prev2
+            } else {
+              return [...withoutStreaming, {
+                type: 'diff_summary',
+                files: { [path]: { added, removed, status: 'ok' } }
+              }]
             }
-            prev2[lastDiffIdx] = summary
-            return prev2
           } else {
-            // 新しいdiff_summaryを作る
-            return [...withoutStreaming, {
-              type: 'diff_summary',
-              files: { [path]: { added, removed, status: 'ok' } }
-            }]
+            // 失敗: pendingエントリを削除
+            const lastDiffIdx = [...withoutStreaming].map((m, i) => ({ m, i }))
+              .filter(({ m }) => m.type === 'diff_summary').pop()?.i ?? -1
+            if (lastDiffIdx >= 0) {
+              const prev2 = [...withoutStreaming]
+              const summary = { ...prev2[lastDiffIdx] }
+              const files = { ...summary.files }
+              if (files[path]?.status === 'pending') delete files[path]
+              if (Object.keys(files).length === 0) {
+                prev2.splice(lastDiffIdx, 1)
+              } else {
+                summary.files = files
+                prev2[lastDiffIdx] = summary
+              }
+              return prev2
+            }
           }
+          return withoutStreaming
         }
 
         return [...withoutStreaming, { type: 'tool_result', tool: msg.tool, result: msg.result }]
