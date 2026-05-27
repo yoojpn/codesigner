@@ -691,6 +691,7 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false)
   const [thinkingLevel, setThinkingLevel] = useState('none')
   const [pendingOutputFiles, setPendingOutputFiles] = useState([])
+  const [agentStatus, setAgentStatus] = useState(null)  // リアルタイムステータス
   const textareaRef = useRef(null)
 
   // 認証チェック
@@ -921,7 +922,11 @@ export default function App() {
     on('title_updated', (msg) => {
       setChats(prev => prev.map(c => c.id === activeChatId ? { ...c, title: msg.title } : c))
     })
+    on('agent_status', (msg) => {
+      setAgentStatus(msg.label || null)
+    })
     on('done', () => {
+      setAgentStatus(null)
       setLoading(false)
       refreshFiles()
       refreshOutputs()
@@ -1193,6 +1198,12 @@ export default function App() {
                 {isDragging && (
                   <div className="drop-overlay">
                     <div className="drop-overlay-inner">📎 ファイルをドロップして添付</div>
+                  </div>
+                )}
+                {loading && agentStatus && (
+                  <div className="agent-status-bar">
+                    <Loader2 size={11} className="spin" />
+                    <span>{agentStatus}</span>
                   </div>
                 )}
                 <div className="input-area">

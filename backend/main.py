@@ -227,12 +227,13 @@ def tool_apply_diff(path, diff, *, session_dir):
         return ' '.join(l.split())
 
     def _find_block(file_lines, search_lines, hint=None):
-        """完全一致 → strip一致 → 空白正規化 → fuzzy の順で検索"""
+        """完全一致 -> strip一致 -> 空白正規化 の3段階。fuzzyは廃止（大ファイルでO(n^2)ハングの原因）"""
         n = len(search_lines)
         if n == 0:
             return hint or 0
 
-        search_order = list(range(max(0, len(file_lines) - n + 1)))
+        total = max(0, len(file_lines) - n + 1)
+        search_order = list(range(total))
         if hint is not None:
             search_order.sort(key=lambda x: abs(x - hint))
 
@@ -254,27 +255,18 @@ def tool_apply_diff(path, diff, *, session_dir):
                    normalize_line(file_lines[i+k]) == normalize_line(search_lines[k])
                    for k in range(n)):
                 return i
-        # 段階4: fuzzy（ratio > 0.72）
-        needle = "".join(normalize_line(l) for l in search_lines)
-        best_i, best_ratio = None, 0.72
-        for i in search_order:
-            window = "".join(normalize_line(file_lines[i+k])
-                             for k in range(n) if i+k < len(file_lines))
-            ratio = difflib.SequenceMatcher(None, needle, window).ratio()
-            if ratio > best_ratio:
-                best_ratio, best_i = ratio, i
-        return best_i
+        # fuzzyマッチは廃止: O(n^2)のSequenceMatcherが大きいファイルで数十分ハングする原因
+        return None
 
     def _make_hint(search_lines, file_lines):
-        """失敗時にAIへ渡す具体的なヒントを生成"""
+        """失敗時のヒント生成（軽量版: get_close_matchesも大ファイルで重いため単純部分一致のみ）"""
         if not search_lines:
             return ""
         first = search_lines[0].strip() if search_lines else ""
-        close = difflib.get_close_matches(first, [l.strip() for l in file_lines], n=1, cutoff=0.35)
-        if close:
-            idx = next((i for i, l in enumerate(file_lines) if l.strip() == close[0]), -1)
-            return f"\nHINT: The closest line found in the file is at line {idx+1}: {close[0][:120]!r}\nUse read_file to get the exact current content, then retry with corrected SEARCH block."
-        return f"\nHINT: First SEARCH line {first[:80]!r} not found. Use read_file to check the current content."
+        for idx, l in enumerate(file_lines):
+            if first and first[:30] in l:
+                return f"\nHINT: Closest line at {idx+1}: {l.strip()[:120]!r}\nUse read_file to get exact content, then retry."
+        return f"\nHINT: First SEARCH line {first[:80]!r} not found. Use read_file to check current content."
 
     try:
         # ── 形式0: V4A patch (*** Begin Patch) ──────────────────────────
@@ -775,6 +767,31 @@ def clean_text(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
+def _tool_status_label(tool: str, args: dict) -> str:
+    """ツール名とargsから人間が読めるステータスラベルを生成"""
+    if tool == "read_file":
+        return f"読み込み中: {args.get('path', '')}"
+    if tool == "write_file":
+        return f"書き込み中: {args.get('path', '')}"
+    if tool == "apply_diff":
+        return f"パッチ適用中: {args.get('path', '')}"
+    if tool == "run_command":
+        cmd = args.get("command", "")[:60]
+        return f"実行中: {cmd}"
+    if tool == "web_search":
+        return f"検索中: {args.get('query', '')[:50]}"
+    if tool == "fetch_url":
+        url = args.get("url", "")[:60]
+        return f"取得中: {url}"
+    if tool == "search_files":
+        return f"ファイル検索中: {args.get('pattern', '')}"
+    if tool == "delete_file":
+        return f"削除中: {args.get('path', '')}"
+    if tool == "copy_to_output":
+        return f"出力コピー中: {args.get('path', '')}"
+    return f"{tool} 実行中..."
+
+
 # ---- Agent Loop with streaming ----
 async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir: Path, chat_id: str, thinking_level: str = "none"):
     _, client = rotator.next_client()
@@ -843,6 +860,8 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     t = threading.Thread(target=_read_chunks, daemon=True)
                     t.start()
 
+                    announced_tools = set()  # ストリーム中に先行通知済みのツール
+
                     while True:
                         chunk = await chunk_queue.get()
                         if chunk is None:
@@ -860,6 +879,15 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                                     await asyncio.sleep(0)  # イベントループに制御を返す
                             if part.function_call:
                                 tool_calls.append(part.function_call)
+                                # ストリーム中にfunction_callが確定した瞬間 → agent_statusで先行通知
+                                fc_name = part.function_call.name
+                                fc_args = dict(part.function_call.args) if part.function_call.args else {}
+                                tool_key = f"{fc_name}:{fc_args.get('path','')}{fc_args.get('command','')}{fc_args.get('query','')}"
+                                if tool_key not in announced_tools:
+                                    announced_tools.add(tool_key)
+                                    label = _tool_status_label(fc_name, fc_args)
+                                    await ws.send_json({"type": "agent_status", "label": label, "tool": fc_name, "args": fc_args})
+                                    await asyncio.sleep(0)
 
                     if accumulated_text:
                         await ws.send_json({"type": "stream_end"})
