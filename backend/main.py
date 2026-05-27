@@ -1031,9 +1031,10 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
         for fc in tool_calls:
             name, args = fc.name, dict(fc.args)
-            # tool_callをDBに保存（リロード後復元用）
-            save_message(chat_id, "tool", json.dumps({"tool": name, "args": to_json_safe(args)}), msg_type="tool_call")
-            await ws.send_json({"type": "tool_call", "tool": name, "args": to_json_safe(args)})
+            # respond_to_userはUIに通知しない
+            if name != "respond_to_user":
+                save_message(chat_id, "tool", json.dumps({"tool": name, "args": to_json_safe(args)}), msg_type="tool_call")
+                await ws.send_json({"type": "tool_call", "tool": name, "args": to_json_safe(args)})
 
             required, reason = needs_approval(name, args, session_dir)
             if required:
@@ -1119,7 +1120,8 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                 has_diff_error = True
                 continue  # 通常のtool_response_parts追加をスキップ
             else:
-                await ws.send_json({"type": "tool_result", "tool": name, "result": result})
+                if name != "respond_to_user":
+                    await ws.send_json({"type": "tool_result", "tool": name, "result": result})
             max_len = 500000 if name == "read_file" else 100000
             tool_response_parts.append(types.Part(
                 function_response=types.FunctionResponse(name=name, response=sanitize_result(result, max_len=max_len))
