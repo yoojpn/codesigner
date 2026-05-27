@@ -708,20 +708,29 @@ export default function App() {
       const rebuilt = []
       let dbIdx = 0
       for (const m of chat.messages) {
-        if (m.msg_type === 'tool_call') {
+        if (m.msg_type === 'tool_call' || m.msg_type === 'tool_result') {
           try {
             const parsed = JSON.parse(m.content)
-            rebuilt.push({ type: 'tool_call', tool: parsed.tool, args: parsed.args })
+            if (m.msg_type === 'tool_call') {
+              rebuilt.push({ type: 'tool_call', tool: parsed.tool, args: parsed.args })
+            } else {
+              rebuilt.push({ type: 'tool_result', tool: parsed.tool, result: parsed.result })
+            }
           } catch {}
-        } else if (m.msg_type === 'tool_result') {
+        } else if (m.role === 'tool') {
+          // msg_typeがtextのtoolロールは無視（JSONパースできないものは表示しない）
           try {
             const parsed = JSON.parse(m.content)
-            rebuilt.push({ type: 'tool_result', tool: parsed.tool, result: parsed.result })
+            if (parsed.args !== undefined) {
+              rebuilt.push({ type: 'tool_call', tool: parsed.tool, args: parsed.args })
+            } else if (parsed.result !== undefined) {
+              rebuilt.push({ type: 'tool_result', tool: parsed.tool, result: parsed.result })
+            }
           } catch {}
         } else if (m.role === 'user') {
           rebuilt.push({ type: 'user', content: m.content, dbIndex: dbIdx })
           dbIdx++
-        } else {
+        } else if (m.role === 'assistant') {
           rebuilt.push({ type: 'text', content: m.content })
         }
       }
