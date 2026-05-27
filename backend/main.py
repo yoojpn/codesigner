@@ -237,9 +237,15 @@ def tool_search_in_file(path, pattern, *, session_dir, context_lines=3):
     try:
         import re as _re
         lines = t.read_text(errors="replace").splitlines()
+        # 正規表現が無効な場合は固定文字列マッチにフォールバック
+        try:
+            _re.compile(pattern, _re.IGNORECASE)
+            use_regex = True
+        except _re.error:
+            use_regex = False
         results = []
         for i, line in enumerate(lines):
-            if pattern.lower() in line.lower() or _re.search(pattern, line, _re.IGNORECASE):
+            if pattern.lower() in line.lower() or (use_regex and _re.search(pattern, line, _re.IGNORECASE)):
                 s = max(0, i - context_lines)
                 e2 = min(len(lines), i + context_lines + 1)
                 results.append({
