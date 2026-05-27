@@ -209,9 +209,10 @@ def tool_read_file(path, *, session_dir, start_line=None, end_line=None):
             e2 = min(total_lines, int(end_line) if end_line is not None else total_lines)
             chunk = "".join(lines[s:e2])
             return {
-                "content": chunk, "path": path,
+                "content_chunk": chunk, "path": path,
                 "start_line": s+1, "end_line": e2,
                 "total_lines": total_lines, "total_bytes": total_bytes,
+                "WARNING": "THIS IS A PARTIAL READ. DO NOT use this content with write_file — that would destroy the rest of the file.",
                 "note": f"Showing lines {s+1}-{e2} of {total_lines} total. Use start_line/end_line to read other sections."
             }
         # 大きいファイルは最初の500行のみ返し、残りは範囲指定で読むよう案内
@@ -219,10 +220,11 @@ def tool_read_file(path, *, session_dir, start_line=None, end_line=None):
         if total_lines > CHUNK_LINES:
             chunk = "".join(lines[:CHUNK_LINES])
             return {
-                "content": chunk, "path": path,
+                "content_chunk": chunk, "path": path,
                 "start_line": 1, "end_line": CHUNK_LINES,
                 "total_lines": total_lines, "total_bytes": total_bytes,
-                "note": f"File has {total_lines} lines ({total_bytes} bytes). Showing lines 1-{CHUNK_LINES}. Use start_line/end_line params to read other sections. Use search_in_file to find specific functions/patterns."
+                "WARNING": "THIS IS A PARTIAL READ. DO NOT use this content with write_file — that would destroy the rest of the file. Use search_in_file + read_file(start_line,end_line) to find and edit specific sections only. Use apply_diff or sed via run_command for edits.",
+                "note": f"File has {total_lines} lines ({total_bytes} bytes). Showing lines 1-{CHUNK_LINES} only. Use start_line/end_line to read other sections."
             }
         return {"content": raw, "path": path, "total_lines": total_lines, "total_bytes": total_bytes}
     except Exception as ex: return {"error": str(ex)}
@@ -254,6 +256,8 @@ def tool_search_in_file(path, pattern, *, session_dir, context_lines=3):
 
 
 def tool_write_file(path, content, *, session_dir):
+    if path.startswith("input/") or path.startswith("input\\"):
+        return {"error": "WRITE BLOCKED: input/ folder is read-only. Copy the file to the working directory first with: run_command cp input/filename.html filename.html"}
     t, e = _guard(path, session_dir)
     if e: return {"error": e}
     t.parent.mkdir(parents=True, exist_ok=True)
@@ -261,6 +265,8 @@ def tool_write_file(path, content, *, session_dir):
     return {"success": True, "path": path, "bytes": len(content)}
 
 def tool_apply_diff(path, diff, *, session_dir):
+    if path.startswith("input/") or path.startswith("input\\"):
+        return {"error": "DIFF BLOCKED: input/ folder is read-only. Copy the file first with: run_command cp input/filename.html filename.html"}
     t, e = _guard(path, session_dir)
     if e: return {"error": e}
     original = t.read_text(errors="replace") if t.exists() else ""
@@ -816,7 +822,9 @@ OTHER TOOLS
 - run_command: execute, test, build, install packages.
 - web_search + fetch_url: look up docs, packages, APIs.
 - copy_to_output: make a file downloadable by the user.
-- User uploads are in the input/ folder.
+- User uploads are in the input/ folder. input/ is READ-ONLY.
+  To edit an uploaded file: ALWAYS copy it first with run_command("cp input/file.html file.html"), then edit the copy.
+  NEVER call write_file or apply_diff on input/ paths directly.
 - Be concise in summaries: list changed files and what changed.
 """
     return prompt
