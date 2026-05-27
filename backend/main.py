@@ -337,7 +337,8 @@ def tool_apply_diff(path, diff, *, session_dir):
             best_pos = _find_block(new_lines, search_lines, hint=hint_adj)
 
             if best_pos is None:
-                hunk_errors.append(f"hunk {hunk_idx+1}: マッチ失敗。対象:\n{''.join(search_lines[:5])[:200]}")
+                preview = ''.join(search_lines[:5])[:200]
+                hunk_errors.append(f"hunk {hunk_idx+1}: マッチ失敗。対象:\n{preview}")
                 continue
 
             j = best_pos
