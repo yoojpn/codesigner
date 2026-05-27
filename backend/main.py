@@ -535,9 +535,9 @@ def should_think(message: str) -> bool:
     return any(kw in lower for kw in AUTO_THINKING_KEYWORDS)
 
 def make_system_prompt(session_dir: Path, thinking_on: bool = False) -> str:
-    rel = session_dir.relative_to(WORKSPACE)
-    return f"""You are Codesigner, an expert AI coding assistant on a Linux VM.
-Session working directory: /workspace/{rel}
+    rel = str(session_dir.relative_to(WORKSPACE))
+    prompt = """You are Codesigner, an expert AI coding assistant on a Linux VM.
+Session working directory: /workspace/""" + rel + """
 All file operations are relative to this directory.
 
 RULES:
@@ -569,6 +569,7 @@ RULES:
 - copy_to_output to make a specific file downloadable by the user.
 - Be concise. List what files were changed and what changed in each.
 """
+    return prompt
 
 def auto_title(message: str) -> str:
     msg = message.replace("<thought off>", "").strip()
