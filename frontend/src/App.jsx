@@ -750,7 +750,8 @@ export default function App() {
         if (m.msg_type === 'tool_call' || m.msg_type === 'tool_result') {
           try {
             const parsed = JSON.parse(m.content)
-            if (m.msg_type === 'tool_call') {
+            if (parsed.tool === 'respond_to_user') { /* skip */ }
+            else if (m.msg_type === 'tool_call') {
               rebuilt.push({ type: 'tool_call', tool: parsed.tool, args: parsed.args })
             } else {
               rebuilt.push({ type: 'tool_result', tool: parsed.tool, result: parsed.result })
@@ -804,6 +805,8 @@ export default function App() {
       setMessages(prev => [...prev.filter(m => m.type !== 'thinking' && m.type !== 'streaming'), { type: 'text', content: msg.content }])
     })
     on('tool_call', (msg) => {
+      // respond_to_userは表示しない
+      if (msg.tool === 'respond_to_user') return
       // apply_diffのtool_callはオプティミスティック表示（行数を先出し）
       if (msg.tool === 'apply_diff') {
         const diffText = msg.args?.diff || ''
@@ -846,6 +849,8 @@ export default function App() {
       })
     })
     on('tool_result', (msg) => {
+      // respond_to_userは表示しない
+      if (msg.tool === 'respond_to_user') return
       // cmd_streamingを確定されたtool_resultに置き換え
       setMessages(prev => {
         const withoutStreaming = prev.filter(m => m.type !== 'cmd_streaming')
