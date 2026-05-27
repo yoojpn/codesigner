@@ -547,27 +547,31 @@ def sanitize_result(result, max_len=100000):
 
 
 async def dispatch_tool(name, args, session_dir, ws=None):
-    kw = {**args, "session_dir": session_dir}
+    sd = session_dir
     if name == "run_command":
         return await tool_run_command_streaming(
             command=args.get("command", ""), cwd=args.get("cwd", "."),
-            session_dir=session_dir, ws=ws
+            session_dir=sd, ws=ws
         )
-    fns = {
-        "list_files":     lambda: tool_list_files(**kw),
-        "read_file":      lambda: tool_read_file(**kw),
-        "write_file":     lambda: tool_write_file(**kw),
-        "apply_diff":     lambda: tool_apply_diff(**kw),
-        "delete_file":    lambda: tool_delete_file(**kw),
-        "search_files":   lambda: tool_search_files(**kw),
-        "copy_to_output": lambda: tool_copy_to_output(**kw),
-        "web_search":     lambda: tool_web_search(**args),
-        "fetch_url":      lambda: tool_fetch_url(**args),
-    }
-    fn = fns.get(name)
-    if not fn: return {"error": f"Unknown tool: {name}"}
-    result = fn()
-    return await result if asyncio.iscoroutine(result) else result
+    if name == "list_files":
+        return tool_list_files(path=args.get("path", "."), session_dir=sd)
+    if name == "read_file":
+        return tool_read_file(path=args["path"], session_dir=sd)
+    if name == "write_file":
+        return tool_write_file(path=args["path"], content=args["content"], session_dir=sd)
+    if name == "apply_diff":
+        return tool_apply_diff(path=args["path"], diff=args["diff"], session_dir=sd)
+    if name == "delete_file":
+        return tool_delete_file(path=args["path"], session_dir=sd)
+    if name == "search_files":
+        return tool_search_files(query=args["query"], path=args.get("path", "."), session_dir=sd)
+    if name == "copy_to_output":
+        return tool_copy_to_output(path=args["path"], output_name=args.get("output_name", ""), session_dir=sd)
+    if name == "web_search":
+        return await tool_web_search(query=args["query"])
+    if name == "fetch_url":
+        return await tool_fetch_url(url=args["url"])
+    return {"error": f"Unknown tool: {name}"}
 
 # ---- Tool schemas ----
 TOOL_DEFS = [types.Tool(function_declarations=[
