@@ -195,12 +195,63 @@ def tool_list_files(path=".", *, session_dir):
         return {"error": str(e)}
     return {"files": results}
 
-def tool_read_file(path, *, session_dir):
+def tool_read_file(path, *, session_dir, start_line=None, end_line=None):
     t, e = _guard(path, session_dir, allow_outside=True)
     if e: return {"error": e}
     if not t.exists(): return {"error": f"Not found: {path}"}
-    try: return {"content": t.read_text(errors="replace"), "path": path}
+    try:
+        raw = t.read_text(errors="replace")
+        lines = raw.splitlines(keepends=True)
+        total_lines = len(lines)
+        total_bytes = len(raw.encode("utf-8", errors="replace"))
+        if start_line is not None or end_line is not None:
+            s = max(0, (int(start_line) - 1) if start_line is not None else 0)
+            e2 = min(total_lines, int(end_line) if end_line is not None else total_lines)
+            chunk = "".join(lines[s:e2])
+            return {
+                "content": chunk, "path": path,
+                "start_line": s+1, "end_line": e2,
+                "total_lines": total_lines, "total_bytes": total_bytes,
+                "note": f"Showing lines {s+1}-{e2} of {total_lines} total. Use start_line/end_line to read other sections."
+            }
+        # 大きいファイルは最初の500行のみ返し、残りは範囲指定で読むよう案内
+        CHUNK_LINES = 500
+        if total_lines > CHUNK_LINES:
+            chunk = "".join(lines[:CHUNK_LINES])
+            return {
+                "content": chunk, "path": path,
+                "start_line": 1, "end_line": CHUNK_LINES,
+                "total_lines": total_lines, "total_bytes": total_bytes,
+                "note": f"File has {total_lines} lines ({total_bytes} bytes). Showing lines 1-{CHUNK_LINES}. Use start_line/end_line params to read other sections. Use search_in_file to find specific functions/patterns."
+            }
+        return {"content": raw, "path": path, "total_lines": total_lines, "total_bytes": total_bytes}
     except Exception as ex: return {"error": str(ex)}
+
+def tool_search_in_file(path, pattern, *, session_dir, context_lines=3):
+    """ファイル内をgrepして行番号付きで返す（大きいファイルの特定部分を探すのに最適）"""
+    t, e = _guard(path, session_dir, allow_outside=True)
+    if e: return {"error": e}
+    if not t.exists(): return {"error": f"Not found: {path}"}
+    try:
+        import re as _re
+        lines = t.read_text(errors="replace").splitlines()
+        results = []
+        for i, line in enumerate(lines):
+            if pattern.lower() in line.lower() or _re.search(pattern, line, _re.IGNORECASE):
+                s = max(0, i - context_lines)
+                e2 = min(len(lines), i + context_lines + 1)
+                results.append({
+                    "line": i + 1,
+                    "match": line.strip(),
+                    "context": "\n".join(f"{s+j+1}: {lines[s+j]}" for j in range(e2-s))
+                })
+                if len(results) >= 20:
+                    break
+        return {"matches": results, "total_matches": len(results), "path": path,
+                "hint": "Use read_file with start_line/end_line around the matching line numbers to read those sections."}
+    except Exception as ex:
+        return {"error": str(ex)}
+
 
 def tool_write_file(path, content, *, session_dir):
     t, e = _guard(path, session_dir)
@@ -625,6 +676,9 @@ async def dispatch_tool(name, args, session_dir, ws=None):
         return tool_delete_file(path=args["path"], session_dir=sd)
     if name == "search_files":
         return tool_search_files(query=args["query"], path=args.get("path", "."), session_dir=sd)
+    if name == "search_in_file":
+        return tool_search_in_file(path=args["path"], pattern=args["pattern"],
+            session_dir=sd, context_lines=int(args.get("context_lines", 3)))
     if name == "copy_to_output":
         return tool_copy_to_output(path=args["path"], output_name=args.get("output_name", ""), session_dir=sd)
     if name == "web_search":
@@ -637,8 +691,20 @@ async def dispatch_tool(name, args, session_dir, ws=None):
 TOOL_DEFS = [types.Tool(function_declarations=[
     types.FunctionDeclaration(name="list_files",description="List files in session directory",
         parameters=types.Schema(type="OBJECT",properties={"path":types.Schema(type="STRING")},required=[])),
-    types.FunctionDeclaration(name="read_file",description="Read file content",
-        parameters=types.Schema(type="OBJECT",properties={"path":types.Schema(type="STRING")},required=["path"])),
+    types.FunctionDeclaration(name="read_file",
+        description="Read file content. Large files are auto-chunked to 500 lines. Use start_line/end_line to read specific sections.",
+        parameters=types.Schema(type="OBJECT",properties={
+            "path":types.Schema(type="STRING"),
+            "start_line":types.Schema(type="INTEGER",description="First line to read (1-indexed)"),
+            "end_line":types.Schema(type="INTEGER",description="Last line to read (inclusive)")
+        },required=["path"])),
+    types.FunctionDeclaration(name="search_in_file",
+        description="Search for a pattern/function name inside a file and return matching lines with context. Best for locating specific code in large files.",
+        parameters=types.Schema(type="OBJECT",properties={
+            "path":types.Schema(type="STRING"),
+            "pattern":types.Schema(type="STRING",description="Text or regex to search for"),
+            "context_lines":types.Schema(type="INTEGER",description="Lines of context around each match (default 3)")
+        },required=["path","pattern"])),
     types.FunctionDeclaration(name="write_file",description="Write or create a file",
         parameters=types.Schema(type="OBJECT",properties={"path":types.Schema(type="STRING"),"content":types.Schema(type="STRING")},required=["path","content"])),
     types.FunctionDeclaration(name="apply_diff",description="Apply unified diff patch",
@@ -692,6 +758,10 @@ RESPONSE QUALITY — NON-NEGOTIABLE
 FILE EDITING — RULES
 ═══════════════════════════════════════════════════════
 - ALWAYS read_file before editing an existing file. Never assume content.
+- For LARGE FILES (read_file returns total_lines > 500):
+  1. Use search_in_file to locate the specific function/section you need to edit.
+  2. Use read_file with start_line/end_line to read only that section.
+  3. Apply apply_diff targeting only those lines. Do NOT try to read the whole file at once.
 - NEVER output file contents or diffs in chat. Use tools exclusively.
 - NEVER output tool calls as JSON text — always use the function calling mechanism.
 - When editing multiple files: call apply_diff/write_file for EVERY file before writing
