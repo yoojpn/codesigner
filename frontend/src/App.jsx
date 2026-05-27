@@ -1048,7 +1048,7 @@ export default function App() {
     try {
       const r = await fetch(apiUrl(`/api/file?path=${encodeURIComponent(path)}&chat_id=${encodeURIComponent(activeChatId)}`))
       const data = await r.json()
-      setFileContent(data.content || '')
+      setFileContent(data.content ?? data.content_chunk ?? '')
     } catch {}
   }, [activeChatId, openTabs])
 

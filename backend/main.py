@@ -1266,7 +1266,15 @@ def list_files_api(chat_id: str = ""):
 def read_file_api(path: str, chat_id: str = ""):
     chat = get_chat(chat_id)
     if not chat: raise HTTPException(404)
-    return tool_read_file(path, session_dir=WORKSPACE / chat["session_dir"])
+    # UIプレビュー用: チャンク制限なしで全文返す
+    session_dir = WORKSPACE / chat["session_dir"]
+    t, e = _guard(path, session_dir, allow_outside=True)
+    if e: raise HTTPException(400, e)
+    if not t.exists(): raise HTTPException(404)
+    try:
+        return {"content": t.read_text(errors="replace"), "path": path}
+    except Exception as ex:
+        raise HTTPException(500, str(ex))
 
 @app.get("/api/outputs")
 def list_outputs(chat_id: str = ""):
