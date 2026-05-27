@@ -687,35 +687,50 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     tool_calls = []
                     candidate_content = None
 
-                    def make_stream():
-                        if thinking_level == "auto":
-                            thinking_on = should_think(user_message)
-                        else:
-                            thinking_on = thinking_level in ("on", "high")
+                    if thinking_level == "auto":
+                        thinking_on = should_think(user_message)
+                    else:
+                        thinking_on = thinking_level in ("on", "high")
 
-                        thinking_config = types.ThinkingConfig(
-                            thinking_budget=1024 if thinking_on else 0
-                        )
+                    thinking_config = types.ThinkingConfig(
+                        thinking_budget=1024 if thinking_on else 0
+                    )
 
+                    gen_config = types.GenerateContentConfig(
+                        system_instruction=make_system_prompt(session_dir, thinking_on=thinking_on),
+                        tools=TOOL_DEFS,
+                        tool_config=types.ToolConfig(
+                            function_calling_config=types.FunctionCallingConfig(mode="AUTO")
+                        ),
+                        temperature=0.3,
+                        thinking_config=thinking_config,
+                    )
+
+                    def _iter_stream():
                         return try_client.models.generate_content_stream(
-                            model=model,
-                            contents=messages,
-                            config=types.GenerateContentConfig(
-                                system_instruction=make_system_prompt(session_dir, thinking_on=thinking_on),
-                                tools=TOOL_DEFS,
-                                tool_config=types.ToolConfig(
-                                    function_calling_config=types.FunctionCallingConfig(
-                                        mode="AUTO"
-                                    )
-                                ),
-                                temperature=0.3,
-                                thinking_config=thinking_config,
-                            ),
+                            model=model, contents=messages, config=gen_config
                         )
 
-                    stream = await loop.run_in_executor(None, make_stream)
+                    stream_iter = await loop.run_in_executor(None, _iter_stream)
 
-                    for chunk in stream:
+                    # チャンクをキューに入れてasyncで消費（ブロッキング解放）
+                    chunk_queue = asyncio.Queue()
+
+                    def _read_chunks():
+                        try:
+                            for chunk in stream_iter:
+                                loop.call_soon_threadsafe(chunk_queue.put_nowait, chunk)
+                        finally:
+                            loop.call_soon_threadsafe(chunk_queue.put_nowait, None)  # sentinel
+
+                    import threading
+                    t = threading.Thread(target=_read_chunks, daemon=True)
+                    t.start()
+
+                    while True:
+                        chunk = await chunk_queue.get()
+                        if chunk is None:
+                            break
                         if not chunk.candidates:
                             continue
                         candidate = chunk.candidates[0]
@@ -726,7 +741,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                                 if cleaned:
                                     accumulated_text += cleaned
                                     await ws.send_json({"type": "stream", "content": cleaned})
-                                    await asyncio.sleep(0)
+                                    await asyncio.sleep(0)  # イベントループに制御を返す
                             if part.function_call:
                                 tool_calls.append(part.function_call)
 
@@ -811,7 +826,13 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                         result["output_copied"] = f"output/{src.name}"
             # tool_resultをDBに保存
             save_message(chat_id, "tool", json.dumps({"tool": name, "result": result}), msg_type="tool_result")
-            await ws.send_json({"type": "tool_result", "tool": name, "result": result})
+
+            # apply_diffのエラーはUIに出さず、AIへの内部フィードバックのみ
+            if name == "apply_diff" and result.get("error") and result.get("error") != "already_applied":
+                # UIには送らない（AIのhistoryには積む）
+                pass
+            else:
+                await ws.send_json({"type": "tool_result", "tool": name, "result": result})
             max_len = 500000 if name == "read_file" else 100000
             tool_response_parts.append(types.Part(
                 function_response=types.FunctionResponse(name=name, response=sanitize_result(result, max_len=max_len))

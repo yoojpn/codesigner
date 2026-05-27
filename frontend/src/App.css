@@ -444,3 +444,29 @@ a:hover {
   from { border-color: var(--accent); }
   to   { border-color: var(--text3); }
 }
+
+/* ---- Diff Summary Block ---- */
+.diff-summary-block {
+  margin: 2px 0 2px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.diff-summary-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text2);
+  padding: 2px 0;
+}
+.diff-summary-check {
+  color: var(--green, #3fb950);
+  flex-shrink: 0;
+}
+.diff-summary-file {
+  color: var(--text1);
+  font-weight: 500;
+  min-width: 80px;
+}

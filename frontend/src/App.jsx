@@ -596,6 +596,28 @@ function MessageList({ messages, onRetry, onEditSend, activeChatId }) {
         )
         if (msg.type === 'tool_call') return <ToolCallBadge key={i} tool={msg.tool} args={msg.args} />
         if (msg.type === 'tool_result') return <ToolResultView key={i} tool={msg.tool} result={msg.result} />
+        if (msg.type === 'diff_summary') return (
+          <div key={i} className="diff-summary-block">
+            {Object.entries(msg.files).map(([path, info]) => {
+              const filename = path.split('/').pop()
+              const total = (info.added + info.removed) || 1
+              const addSegs = Math.round((info.added / total) * 8)
+              return (
+                <div key={path} className="diff-summary-row">
+                  <Check size={11} className="diff-summary-check" />
+                  <span className="diff-summary-file">{filename}</span>
+                  <span className="diff-stat-add">+{info.added}</span>
+                  <span className="diff-stat-del"> −{info.removed}</span>
+                  <span className="diff-stat-bar" style={{marginLeft:4}}>
+                    {Array.from({ length: 8 }).map((_, si) => (
+                      <span key={si} className={`diff-stat-seg ${si < addSegs ? 'add' : 'del'}`} />
+                    ))}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )
         if (msg.type === 'output_files') return (
           <div key={i} className="message agent-msg">
             <div className="msg-avatar"><Cpu size={12} /></div>
@@ -776,6 +798,8 @@ export default function App() {
       setMessages(prev => [...prev.filter(m => m.type !== 'thinking' && m.type !== 'streaming'), { type: 'text', content: msg.content }])
     })
     on('tool_call', (msg) => {
+      // apply_diffのtool_callは表示しない（tool_resultで集約表示する）
+      if (msg.tool === 'apply_diff') return
       setMessages(prev => [...prev.filter(m => m.type !== 'thinking'), { type: 'tool_call', tool: msg.tool, args: msg.args }])
     })
     on('cmd_stream', (msg) => {
@@ -791,6 +815,35 @@ export default function App() {
       // cmd_streamingを確定されたtool_resultに置き換え
       setMessages(prev => {
         const withoutStreaming = prev.filter(m => m.type !== 'cmd_streaming')
+
+        // apply_diffの成功はファイルごとに累積してまとめる
+        if (msg.tool === 'apply_diff' && msg.result?.success) {
+          const path = msg.result.path || ''
+          const added = msg.result.lines_changed ?? 0
+          const removed = msg.result.lines_removed ?? 0
+          // 既存のdiff_summaryメッセージを探す（直近のthinking/streaming以外の末尾）
+          const lastDiffIdx = [...withoutStreaming].map((m, i) => ({ m, i }))
+            .filter(({ m }) => m.type === 'diff_summary').pop()?.i ?? -1
+          if (lastDiffIdx >= 0) {
+            // ファイルごとに累積
+            const prev2 = [...withoutStreaming]
+            const summary = { ...prev2[lastDiffIdx] }
+            const existing = summary.files[path] || { added: 0, removed: 0 }
+            summary.files = {
+              ...summary.files,
+              [path]: { added: existing.added + added, removed: existing.removed + removed, status: 'ok' }
+            }
+            prev2[lastDiffIdx] = summary
+            return prev2
+          } else {
+            // 新しいdiff_summaryを作る
+            return [...withoutStreaming, {
+              type: 'diff_summary',
+              files: { [path]: { added, removed, status: 'ok' } }
+            }]
+          }
+        }
+
         return [...withoutStreaming, { type: 'tool_result', tool: msg.tool, result: msg.result }]
       })
       if (msg.tool === 'copy_to_output' && msg.result?.success) {
