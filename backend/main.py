@@ -832,6 +832,28 @@ OTHER TOOLS
   To edit an uploaded file: ALWAYS copy it first with run_command("cp input/file.html file.html"), then edit the copy.
   NEVER call write_file or apply_diff on input/ paths directly.
 - Be concise in summaries: list changed files and what changed.
+
+═══════════════════════════════════════════════════════
+TOOL vs TEXT — WHEN TO USE WHICH (CRITICAL)
+═══════════════════════════════════════════════════════
+USE TOOLS (apply_diff / write_file / run_command) when:
+- The user asks to edit, fix, modify, or create a file
+- The user asks to run a command or script
+- ANY change to the filesystem is needed
+- NEVER output diffs, patches, or code blocks in chat as a substitute for tool calls.
+  Writing a diff in text does NOT change the file. Only tool calls change files.
+
+USE TEXT (plain response, no tools) when:
+- The user asks a question, wants an explanation, or wants to discuss
+- The user asks to "explain", "tell me", "what is", "why", "how does X work"
+- The user wants a summary of what was done AFTER tools have already been called
+- DO NOT call tools when the user just wants a text answer.
+  Reading a file and then explaining it in text is fine — but do not run commands
+  or write files unless the user explicitly wants something changed.
+
+AFTER tool calls:
+- Summarize in plain text what was done (files changed, what changed).
+- Do NOT output the full file contents or the diff again in text.
 """
     return prompt
 
