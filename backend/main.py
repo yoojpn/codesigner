@@ -543,6 +543,7 @@ RULES:
 - NEVER output lines like "User said:", "The user wrote:", "* User said:", "I should", "Role:", "Constraint:", "Language:" or any analysis of the conversation context.
 - NEVER translate or repeat the user's message back to them.
 - If the user writes in Japanese, your ENTIRE response must be in Japanese (except code).
+- NEVER output tool calls as JSON text. ALWAYS use the actual function calling mechanism — never write {"tool": ...} in your response text.
 - NEVER output diff text in chat. ALWAYS call the apply_diff tool directly — no exceptions.
 - apply_diff supports TWO formats:
   1) unified diff: standard @@ -N,M +N,M @@ hunks (preferred for large changes)
@@ -578,6 +579,8 @@ MODELS = ["gemini-3.1-flash-lite", "gemini-3.1-flash-lite-001"]
 
 def clean_text(text: str) -> str:
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    # AIがツール呼び出しをJSONテキストとして出力してしまった場合を除去
+    text = re.sub(r'\{"tool"\s*:.*?\}\s*', "", text, flags=re.DOTALL)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -623,7 +626,12 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                             config=types.GenerateContentConfig(
                                 system_instruction=make_system_prompt(session_dir, thinking_on=thinking_on),
                                 tools=TOOL_DEFS,
-                                temperature=0.7,
+                                tool_config=types.ToolConfig(
+                                    function_calling_config=types.FunctionCallingConfig(
+                                        mode="AUTO"
+                                    )
+                                ),
+                                temperature=0.3,
                                 thinking_config=thinking_config,
                             ),
                         )
