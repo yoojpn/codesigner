@@ -455,6 +455,55 @@ function ApprovalCard({ msg, onApprove, onReject }) {
   )
 }
 
+// ---- Editor Area with HTML Preview ----
+function EditorArea({ selectedFile, fileContent, lang }) {
+  const [viewMode, setViewMode] = useState('code') // 'code' | 'preview'
+  const isHtml = selectedFile?.toLowerCase().endsWith('.html')
+
+  // ファイルが変わったらcodeに戻す
+  useEffect(() => { setViewMode('code') }, [selectedFile])
+
+  if (!selectedFile) return <div className="editor-area" />
+
+  return (
+    <div className="editor-area">
+      {isHtml && (
+        <div className="editor-toolbar">
+          <button
+            className={`editor-view-btn ${viewMode === 'code' ? 'active' : ''}`}
+            onClick={() => setViewMode('code')}
+          >
+            <Code2 size={12} /> コード
+          </button>
+          <button
+            className={`editor-view-btn ${viewMode === 'preview' ? 'active' : ''}`}
+            onClick={() => setViewMode('preview')}
+          >
+            <Globe size={12} /> プレビュー
+          </button>
+          <span className="editor-toolbar-filename">{selectedFile.split('/').pop()}</span>
+        </div>
+      )}
+      {viewMode === 'preview' && isHtml ? (
+        <iframe
+          className="html-preview"
+          srcDoc={fileContent}
+          sandbox="allow-scripts allow-same-origin"
+          title="HTML Preview"
+        />
+      ) : (
+        <MonacoEditor
+          height="100%"
+          language={lang}
+          value={fileContent}
+          theme="vs-dark"
+          options={{ readOnly: true, minimap: { enabled: false }, fontSize: 13, scrollBeyondLastLine: false, lineNumbers: 'on' }}
+        />
+      )}
+    </div>
+  )
+}
+
 // ---- Message Renderer ----
 function MessageList({ messages, onRetry, onEditSend, activeChatId }) {
   const bottomRef = useRef(null)
@@ -1035,17 +1084,7 @@ export default function App() {
             )}
           </div>
         ) : (
-          <div className="editor-area">
-            {selectedFile && (
-              <MonacoEditor
-                height="100%"
-                language={lang}
-                value={fileContent}
-                theme="vs-dark"
-                options={{ readOnly: true, minimap: { enabled: false }, fontSize: 13, scrollBeyondLastLine: false, lineNumbers: 'on' }}
-              />
-            )}
-          </div>
+          <EditorArea selectedFile={selectedFile} fileContent={fileContent} lang={lang} />
         )}
       </div>
     </div>
