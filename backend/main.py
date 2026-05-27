@@ -278,11 +278,16 @@ def tool_apply_diff(path, diff, *, session_dir):
                     text = text.replace(search_block, replace_block, 1)
                     applied += 1
                 else:
-                    # strip一致で探す
+                    # strip一致で探す（バッククォート・特殊文字対応）
                     sl = search_block.splitlines()
                     fl = text.splitlines()
                     found = False
+                    import unicodedata
+                    def normalize_line(l):
+                        # 空白・タブを正規化、制御文字除去
+                        return ' '.join(l.split())
                     for i in range(len(fl) - len(sl) + 1):
+                        # 段階1: strip一致
                         if all(fl[i+k].strip() == sl[k].strip() for k in range(len(sl))):
                             actual = "\n".join(fl[i:i+len(sl)])
                             text = text.replace(actual, replace_block, 1)
@@ -290,8 +295,37 @@ def tool_apply_diff(path, diff, *, session_dir):
                             found = True
                             break
                     if not found:
+                        for i in range(len(fl) - len(sl) + 1):
+                            # 段階2: 空白正規化一致
+                            if all(normalize_line(fl[i+k]) == normalize_line(sl[k]) for k in range(len(sl))):
+                                actual = "\n".join(fl[i:i+len(sl)])
+                                text = text.replace(actual, replace_block, 1)
+                                applied += 1
+                                found = True
+                                break
+                    if not found:
+                        import difflib
+                        # 段階3: fuzzy（最も近い行を探して周辺に絞る）
+                        needle_flat = ' '.join(normalize_line(l) for l in sl)
+                        best_i, best_ratio = None, 0.75
+                        for i in range(len(fl) - len(sl) + 1):
+                            window_flat = ' '.join(normalize_line(fl[i+k]) for k in range(len(sl)) if i+k < len(fl))
+                            ratio = difflib.SequenceMatcher(None, needle_flat, window_flat).ratio()
+                            if ratio > best_ratio:
+                                best_ratio, best_i = ratio, i
+                        if best_i is not None:
+                            actual = "\n".join(fl[best_i:best_i+len(sl)])
+                            text = text.replace(actual, replace_block, 1)
+                            applied += 1
+                            found = True
+                    if not found:
+                        # AIへのヒント: 実際のファイルで近い行を探して提示
+                        import difflib
+                        needle_first = sl[0].strip() if sl else ''
+                        close = difflib.get_close_matches(needle_first, [l.strip() for l in fl], n=1, cutoff=0.4)
+                        hint = f" (近い行: {close[0][:100]!r})" if close else ""
                         preview = search_block[:200]
-                        errors.append(f"SEARCHブロック未発見:\n{preview}")
+                        errors.append(f"SEARCHブロック未発見{hint}:\n{preview}")
             if errors and applied == 0:
                 marker.unlink(missing_ok=True)
                 return {"error": "\n".join(errors)}
@@ -374,6 +408,38 @@ def tool_apply_diff(path, diff, *, session_dir):
 
     except Exception as ex:
         marker.unlink(missing_ok=True)
+        return {"error": str(ex)}
+
+async def tool_run_command_streaming(command, cwd=".", *, session_dir, ws=None):
+    """コマンドをストリーミング実行しWSにリアルタイム送信"""
+    work_dir = (session_dir / cwd).resolve()
+    if not str(work_dir).startswith(str(WORKSPACE.resolve())):
+        return {"error": "Access denied"}
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command, cwd=work_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        output_lines = []
+        async def read_stream():
+            async for line in proc.stdout:
+                decoded = line.decode('utf-8', errors='replace')
+                output_lines.append(decoded)
+                if ws:
+                    try:
+                        await ws.send_json({"type": "cmd_stream", "line": decoded.rstrip()})
+                    except Exception:
+                        pass
+        try:
+            await asyncio.wait_for(read_stream(), timeout=60)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return {"error": "Timed out (60s)", "stdout": ''.join(output_lines)[-4000:]}
+        await proc.wait()
+        stdout = ''.join(output_lines)
+        return {"stdout": stdout[-8000:], "stderr": "", "exit_code": proc.returncode, "command": command}
+    except Exception as ex:
         return {"error": str(ex)}
 
 def tool_run_command(command, cwd=".", *, session_dir):
@@ -480,14 +546,18 @@ def sanitize_result(result, max_len=100000):
     return r
 
 
-async def dispatch_tool(name, args, session_dir):
+async def dispatch_tool(name, args, session_dir, ws=None):
     kw = {**args, "session_dir": session_dir}
+    if name == "run_command":
+        return await tool_run_command_streaming(
+            command=args.get("command", ""), cwd=args.get("cwd", "."),
+            session_dir=session_dir, ws=ws
+        )
     fns = {
         "list_files":     lambda: tool_list_files(**kw),
         "read_file":      lambda: tool_read_file(**kw),
         "write_file":     lambda: tool_write_file(**kw),
         "apply_diff":     lambda: tool_apply_diff(**kw),
-        "run_command":    lambda: tool_run_command(command=args.get("command",""), cwd=args.get("cwd","."), session_dir=session_dir),
         "delete_file":    lambda: tool_delete_file(**kw),
         "search_files":   lambda: tool_search_files(**kw),
         "copy_to_output": lambda: tool_copy_to_output(**kw),
@@ -722,7 +792,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     ))
                     continue
 
-            result = await dispatch_tool(name, args, session_dir)
+            result = await dispatch_tool(name, args, session_dir, ws=ws)
 
             # write_file / apply_diff 成功時: output/ へ自動コピー
             if result.get("success") and name in ("write_file", "apply_diff"):

@@ -618,6 +618,17 @@ function MessageList({ messages, onRetry, onEditSend, activeChatId }) {
             </div>
           </div>
         )
+        if (msg.type === 'cmd_streaming') return (
+          <div key={i} className="tool-badge">
+            <span className="tool-badge-icon"><Terminal size={13} /></span>
+            <div className="tool-badge-body">
+              <div className="tool-badge-header"><span className="tool-name">run_command</span> <Loader2 size={11} className="spin" /></div>
+              <pre className="cmd-output cmd-live">
+                {msg.lines.slice(-40).join('\n')}
+              </pre>
+            </div>
+          </div>
+        )
         if (msg.type === 'thinking') return (
           <div key={i} className="message agent-msg">
             <div className="msg-avatar"><Cpu size={12} /></div>
@@ -767,8 +778,21 @@ export default function App() {
     on('tool_call', (msg) => {
       setMessages(prev => [...prev.filter(m => m.type !== 'thinking'), { type: 'tool_call', tool: msg.tool, args: msg.args }])
     })
+    on('cmd_stream', (msg) => {
+      setMessages(prev => {
+        const last = prev[prev.length - 1]
+        if (last && last.type === 'cmd_streaming') {
+          return [...prev.slice(0, -1), { ...last, lines: [...last.lines, msg.line] }]
+        }
+        return [...prev, { type: 'cmd_streaming', lines: [msg.line] }]
+      })
+    })
     on('tool_result', (msg) => {
-      setMessages(prev => [...prev, { type: 'tool_result', tool: msg.tool, result: msg.result }])
+      // cmd_streamingを確定されたtool_resultに置き換え
+      setMessages(prev => {
+        const withoutStreaming = prev.filter(m => m.type !== 'cmd_streaming')
+        return [...withoutStreaming, { type: 'tool_result', tool: msg.tool, result: msg.result }]
+      })
       if (msg.tool === 'copy_to_output' && msg.result?.success) {
         refreshOutputs()
         const fname = msg.result.output_path?.split('/').pop() || ''

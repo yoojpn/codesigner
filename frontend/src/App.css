@@ -432,3 +432,15 @@ a:hover {
   border: none;
   background: #fff;
 }
+
+/* ---- Live command streaming ---- */
+.cmd-live {
+  border-left: 2px solid var(--accent);
+  animation: pulse-border 1s ease-in-out infinite alternate;
+  max-height: 300px;
+  overflow-y: auto;
+}
+@keyframes pulse-border {
+  from { border-color: var(--accent); }
+  to   { border-color: var(--text3); }
+}
