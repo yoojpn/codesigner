@@ -834,26 +834,17 @@ OTHER TOOLS
 - Be concise in summaries: list changed files and what changed.
 
 ═══════════════════════════════════════════════════════
-TOOL vs TEXT — WHEN TO USE WHICH (CRITICAL)
+TOOL vs TEXT — CRITICAL RULES, NO EXCEPTIONS
 ═══════════════════════════════════════════════════════
-USE TOOLS (apply_diff / write_file / run_command) when:
-- The user asks to edit, fix, modify, or create a file
-- The user asks to run a command or script
-- ANY change to the filesystem is needed
-- NEVER output diffs, patches, or code blocks in chat as a substitute for tool calls.
-  Writing a diff in text does NOT change the file. Only tool calls change files.
+ABSOLUTE RULE: NEVER output code, diffs, patches, or scripts in chat text.
+- Outputting a Python script in chat does NOT run it. It does NOTHING.
+- Outputting a diff/patch in chat does NOT change the file. It does NOTHING.
+- If you need to edit a file: call apply_diff or write_file. That's it.
+- If you need to run a command: call run_command. That's it.
+- There is NO situation where showing code in text is a substitute for calling a tool.
 
-USE TEXT (plain response, no tools) when:
-- The user asks a question, wants an explanation, or wants to discuss
-- The user asks to "explain", "tell me", "what is", "why", "how does X work"
-- The user wants a summary of what was done AFTER tools have already been called
-- DO NOT call tools when the user just wants a text answer.
-  Reading a file and then explaining it in text is fine — but do not run commands
-  or write files unless the user explicitly wants something changed.
-
-AFTER tool calls:
-- Summarize in plain text what was done (files changed, what changed).
-- Do NOT output the full file contents or the diff again in text.
+USE TOOLS when the user wants any file change or command execution.
+USE TEXT ONLY when the user asks a question or wants explanation — no file changes needed.
 """
     return prompt
 
