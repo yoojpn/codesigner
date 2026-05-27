@@ -905,8 +905,11 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
     diff_fail_per_file: dict = {}  # ファイルごとの失敗カウント
     MAX_DIFF_RETRIES = 5  # 全体上限
     MAX_PER_FILE = 3       # 同一ファイルの上限
+    done = False
 
     for _ in range(30):
+        if done:
+            break
         response = None
         last_err = None
         tried = set()
@@ -1071,6 +1074,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     function_response=types.FunctionResponse(name=name, response={"delivered": True})
                 ))
                 messages.append(types.Content(role="user", parts=tool_response_parts))
+                done = True
                 break
 
             # write_file / apply_diff 成功時: output/ へ自動コピー
