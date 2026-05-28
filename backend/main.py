@@ -928,7 +928,6 @@ def _tool_status_label(tool: str, args: dict) -> str:
 async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir: Path, chat_id: str, thinking_level: str = "none"):
     _, client = rotator.next_client()
     messages = history + [types.Content(role="user", parts=[types.Part(text=user_message)])]
-    loop = asyncio.get_event_loop()
 
     # diff失敗カウンタ（無限ループ防止）
     diff_fail_count = 0
@@ -972,33 +971,11 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                         thinking_config=thinking_config,
                     )
 
-                    def _iter_stream():
-                        return try_client.models.generate_content_stream(
-                            model=model, contents=messages, config=gen_config
-                        )
+                    announced_tools = set()
 
-                    stream_iter = await loop.run_in_executor(None, _iter_stream)
-
-                    # チャンクをキューに入れてasyncで消費（ブロッキング解放）
-                    chunk_queue = asyncio.Queue()
-
-                    def _read_chunks():
-                        try:
-                            for chunk in stream_iter:
-                                loop.call_soon_threadsafe(chunk_queue.put_nowait, chunk)
-                        finally:
-                            loop.call_soon_threadsafe(chunk_queue.put_nowait, None)  # sentinel
-
-                    import threading
-                    t = threading.Thread(target=_read_chunks, daemon=True)
-                    t.start()
-
-                    announced_tools = set()  # ストリーム中に先行通知済みのツール
-
-                    while True:
-                        chunk = await chunk_queue.get()
-                        if chunk is None:
-                            break
+                    async for chunk in await try_client.aio.models.generate_content_stream(
+                        model=model, contents=messages, config=gen_config
+                    ):
                         if not chunk.candidates:
                             continue
                         candidate = chunk.candidates[0]
@@ -1009,10 +986,8 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                                 if cleaned:
                                     accumulated_text += cleaned
                                     await ws.send_json({"type": "stream", "content": cleaned})
-                                    await asyncio.sleep(0)  # イベントループに制御を返す
                             if part.function_call:
                                 tool_calls.append(part.function_call)
-                                # ストリーム中にfunction_callが確定した瞬間 → agent_statusで先行通知
                                 fc_name = part.function_call.name
                                 fc_args = dict(part.function_call.args) if part.function_call.args else {}
                                 tool_key = f"{fc_name}:{fc_args.get('path','')}{fc_args.get('command','')}{fc_args.get('query','')}"
@@ -1020,7 +995,6 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                                     announced_tools.add(tool_key)
                                     label = _tool_status_label(fc_name, fc_args)
                                     await ws.send_json({"type": "agent_status", "label": label, "tool": fc_name, "args": fc_args})
-                                    await asyncio.sleep(0)
 
                     if accumulated_text:
                         await ws.send_json({"type": "stream_end"})
