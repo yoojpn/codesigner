@@ -1300,7 +1300,7 @@ export default function App() {
                   style={{display:'contents'}}
                 >
                 <MessageList messages={messages} onRetry={handleRetry} onEditSend={sendEdit} activeChatId={activeChatId} />
-                {!loading && Object.keys(diffResults).length > 0 && (
+                {Object.keys(diffResults).length > 0 && (
                   <div className="diff-results-panel">
                     {Object.entries(diffResults).map(([path, d]) => (
                       <DiffResultView key={path} diffResult={d} />
