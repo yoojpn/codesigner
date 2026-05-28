@@ -1401,31 +1401,10 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
         if has_diff_error:
             continue
 
-        # Gemini Flash 途中停止対策 (issue #15772):
-        # ツールを呼んだ後にテキストなしで止まる既知のバグへの対処。
-        # さらに「わかりました、やります」系の短いテキストで止まるケースも対処。
-        _stall_texts = [
-            "続けます", "実装します", "修正します", "確認します", "やります",
-            "承知", "了解", "わかりました", "進めます", "行います",
-            "implement", "continue", "proceed", "i'll", "i will", "let me", "sure"
-        ]
-        _text_lower = text.strip().lower() if text else ""
-        _is_stalling = (
-            not text  # テキストなしで止まった
-            or (len(text.strip()) < 80 and any(s in _text_lower for s in _stall_texts))  # 短い宣言で止まった
-        )
-        if tool_calls and _is_stalling:
-            # ターン数に応じてメッセージを強化
-            logger.warning(f"[Inject] stalling detected: text={repr(text[:60])} tool_calls={len(tool_calls)}")
-            _inject = (
-                "[SYSTEM] CRITICAL: You stopped mid-task. This is not acceptable. "
-                "You MUST continue immediately. Do NOT output any text explanation — just call the next tool. "
-                "Keep calling tools until ALL changes are complete. "
-                "Task is done ONLY when every file is edited and you send a final summary. "
-                "Call the next tool NOW."
-            )
-            messages.append(types.Content(role="user", parts=[types.Part(text=_inject)]))
         # ツール呼び出しがあった場合は継続（AIはまだ作業中）
+        # NOTE: text='' かつ tool_calls>0 は正常動作。Gemini Flashはツール呼び出し時にテキストを返さない。
+        # stallingは「テキストなし・ツールなし」のケースのみ（空レスポンス）= 上のempty response処理で対応済み。
+        # 「短い宣言テキスト+ツールあり」のstalling注入は削除: コンテキストを汚染してGeminiが迷走する原因だった。
 
     logger.info("[Agent] done")
     await ws.send_json({"type": "done"})
