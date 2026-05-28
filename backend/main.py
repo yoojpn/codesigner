@@ -697,8 +697,6 @@ async def dispatch_tool(name, args, session_dir, ws=None):
         return await tool_web_search(query=args["query"])
     if name == "fetch_url":
         return await tool_fetch_url(url=args["url"])
-    if name == "respond_to_user":
-        return {"delivered": True}
     return {"error": f"Unknown tool: {name}"}
 
 # ---- Tool schemas ----
@@ -735,9 +733,6 @@ TOOL_DEFS = [types.Tool(function_declarations=[
         parameters=types.Schema(type="OBJECT",properties={"url":types.Schema(type="STRING")},required=["url"])),
     types.FunctionDeclaration(name="copy_to_output",description="Copy file to output for download",
         parameters=types.Schema(type="OBJECT",properties={"path":types.Schema(type="STRING"),"output_name":types.Schema(type="STRING")},required=["path"])),
-    types.FunctionDeclaration(name="respond_to_user",
-        description="Send a text reply to the user. Use this for ALL responses: answers to questions, progress updates, summaries, error explanations, and any other message. You MUST call this tool to send any text to the user — plain text output is NOT delivered.",
-        parameters=types.Schema(type="OBJECT",properties={"message":types.Schema(type="STRING",description="The message to send to the user")},required=["message"])),
 ])]
 
 AUTO_THINKING_KEYWORDS = [
@@ -905,11 +900,8 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
     diff_fail_per_file: dict = {}  # ファイルごとの失敗カウント
     MAX_DIFF_RETRIES = 5  # 全体上限
     MAX_PER_FILE = 3       # 同一ファイルの上限
-    done = False
 
     for _ in range(30):
-        if done:
-            break
         response = None
         last_err = None
         tried = set()
@@ -938,7 +930,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                         system_instruction=make_system_prompt(session_dir, thinking_on=thinking_on),
                         tools=TOOL_DEFS,
                         tool_config=types.ToolConfig(
-                            function_calling_config=types.FunctionCallingConfig(mode="ANY")
+                            function_calling_config=types.FunctionCallingConfig(mode="AUTO")
                         ),
                         temperature=0.3,
                         thinking_config=thinking_config,
@@ -1031,10 +1023,8 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
         for fc in tool_calls:
             name, args = fc.name, dict(fc.args)
-            # respond_to_userはUIに通知しない
-            if name != "respond_to_user":
-                save_message(chat_id, "tool", json.dumps({"tool": name, "args": to_json_safe(args)}), msg_type="tool_call")
-                await ws.send_json({"type": "tool_call", "tool": name, "args": to_json_safe(args)})
+            save_message(chat_id, "tool", json.dumps({"tool": name, "args": to_json_safe(args)}), msg_type="tool_call")
+            await ws.send_json({"type": "tool_call", "tool": name, "args": to_json_safe(args)})
 
             required, reason = needs_approval(name, args, session_dir)
             if required:
@@ -1061,22 +1051,38 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     ))
                     continue
 
+            # apply_diff前のスナップショット
+            _snapshot_before = None
+            if name == "apply_diff":
+                _snap_path = session_dir / args.get("path", "")
+                if _snap_path.exists():
+                    _snapshot_before = _snap_path.read_text(errors="replace")
+
             result = await dispatch_tool(name, args, session_dir, ws=ws)
 
-            # respond_to_user: テキストをフロントに送信してループ終了
-            if name == "respond_to_user":
-                msg_text = args.get("message", "")
-                if msg_text:
-                    await ws.send_json({"type": "stream", "content": msg_text})
-                    await ws.send_json({"type": "stream_end"})
-                    text = msg_text
-                save_message(chat_id, "assistant", msg_text)
-                tool_response_parts.append(types.Part(
-                    function_response=types.FunctionResponse(name=name, response={"delivered": True})
-                ))
-                messages.append(types.Content(role="user", parts=tool_response_parts))
-                done = True
-                break
+            # apply_diff成功時: diffを生成してフロントに送信
+            if name == "apply_diff" and result.get("success") and _snapshot_before is not None:
+                import difflib
+                _snap_path2 = session_dir / args.get("path", "")
+                if _snap_path2.exists():
+                    _after = _snap_path2.read_text(errors="replace")
+                    _before_lines = _snapshot_before.splitlines(keepends=True)
+                    _after_lines = _after.splitlines(keepends=True)
+                    _udiff = list(difflib.unified_diff(
+                        _before_lines, _after_lines,
+                        fromfile=f"a/{args.get('path','')}",
+                        tofile=f"b/{args.get('path','')}",
+                        n=3
+                    ))
+                    added = sum(1 for l in _udiff if l.startswith('+') and not l.startswith('+++'))
+                    removed = sum(1 for l in _udiff if l.startswith('-') and not l.startswith('---'))
+                    await ws.send_json({
+                        "type": "diff_result",
+                        "path": args.get("path", ""),
+                        "added": added,
+                        "removed": removed,
+                        "diff": "".join(_udiff)
+                    })
 
             # write_file / apply_diff 成功時: output/ へ自動コピー
             if result.get("success") and name in ("write_file", "apply_diff"):
@@ -1120,8 +1126,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                 has_diff_error = True
                 continue  # 通常のtool_response_parts追加をスキップ
             else:
-                if name != "respond_to_user":
-                    await ws.send_json({"type": "tool_result", "tool": name, "result": result})
+                await ws.send_json({"type": "tool_result", "tool": name, "result": result})
             max_len = 500000 if name == "read_file" else 100000
             tool_response_parts.append(types.Part(
                 function_response=types.FunctionResponse(name=name, response=sanitize_result(result, max_len=max_len))

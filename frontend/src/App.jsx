@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { ChevronRight, ChevronDown, File, Folder, FolderOpen, X, Check, Terminal,
   Search, RefreshCw, Download, Plus, Trash2, Send, Loader2, AlertTriangle,
-  Globe, Code2, Cpu, Paperclip, MessageSquare, Edit2, Copy, Lock } from 'lucide-react'
+  Globe, Code2, Cpu, Paperclip, MessageSquare, Edit2, Copy, Lock, FilePen, FileText } from 'lucide-react'
 import MonacoEditor from '@monaco-editor/react'
 import ReactMarkdown from 'react-markdown'
 import './App.css'
@@ -331,6 +331,134 @@ function DiffView({ diff }) {
   )
 }
 
+// ツールのグループ表示ラベル
+function toolGroupLabel(items) {
+  const fileEdits = items.filter(t => ['apply_diff','write_file'].includes(t.tool))
+  const cmds = items.filter(t => t.tool === 'run_command')
+  const reads = items.filter(t => t.tool === 'read_file')
+  const searches = items.filter(t => ['web_search','search_files','fetch_url'].includes(t.tool))
+
+  const parts = []
+  if (fileEdits.length === 1) {
+    parts.push(`${fileEdits[0].tool === 'write_file' ? 'ファイルを作成' : 'ファイルを編集'} · ${fileEdits[0].args?.path?.split('/').pop() || ''}`)
+  } else if (fileEdits.length > 1) {
+    parts.push(`${fileEdits.length}件のファイルを編集`)
+  }
+  if (cmds.length === 1) parts.push(`実行 · ${(cmds[0].args?.command || '').slice(0, 40)}`)
+  else if (cmds.length > 1) parts.push(`${cmds.length}件のコマンドを実行`)
+  if (reads.length === 1) parts.push(`読み込み · ${reads[0].args?.path?.split('/').pop() || ''}`)
+  else if (reads.length > 1) parts.push(`${reads.length}件のファイルを読み込み`)
+  if (searches.length > 0) parts.push(`検索`)
+  if (parts.length === 0) {
+    const names = [...new Set(items.map(t => t.tool))].join(', ')
+    parts.push(names)
+  }
+  return parts.join(' · ')
+}
+
+function toolGroupIcon(items) {
+  const tools = items.map(t => t.tool)
+  if (tools.some(t => ['apply_diff','write_file'].includes(t))) return <FilePen size={12} />
+  if (tools.some(t => t === 'run_command')) return <Terminal size={12} />
+  if (tools.some(t => t === 'read_file')) return <FileText size={12} />
+  if (tools.some(t => ['web_search','fetch_url'].includes(t))) return <Globe size={12} />
+  return <Code2 size={12} />
+}
+
+function DiffResultView({ diffResult }) {
+  const [expanded, setExpanded] = useState(false)
+  if (!diffResult) return null
+  const { path, added, removed, diff } = diffResult
+  const filename = path?.split('/').pop() || path
+  const lines = (diff || '').split('\n')
+
+  return (
+    <div className="diff-result-card">
+      <button className="diff-result-header" onClick={() => setExpanded(v => !v)}>
+        <span className="diff-result-check"><Check size={11} /></span>
+        <span className="diff-result-filename">{filename}</span>
+        <span className="diff-stat-add">+{added}</span>
+        <span className="diff-stat-del"> −{removed}</span>
+        <span className="diff-stat-bar">
+          {(() => {
+            const total = (added + removed) || 1
+            const addSegs = Math.round((added / total) * 8)
+            return Array.from({ length: 8 }).map((_, si) => (
+              <span key={si} className={`diff-stat-seg ${si < addSegs ? 'add' : 'del'}`} />
+            ))
+          })()}
+        </span>
+        <span className="diff-toggle-chevron">{expanded ? '▲' : '▼'}</span>
+      </button>
+      {expanded && (
+        <div className="diff-content">
+          {lines.filter(l => !l.startsWith('---') && !l.startsWith('+++') && l.trim()).map((line, i) => {
+            const cls = line.startsWith('+') ? 'diff-add' : line.startsWith('-') ? 'diff-del' : line.startsWith('@@') ? 'diff-hunk' : 'diff-ctx'
+            return <div key={i} className={`diff-line ${cls}`}><span className="diff-line-text">{line}</span></div>
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ToolGroup({ group }) {
+  const [expanded, setExpanded] = useState(false)
+  const items = group.items || []
+  const isDone = items.every(t => t.result !== undefined)
+  const hasError = items.some(t => t.result?.error && t.result?.error !== 'already_applied')
+  const label = toolGroupLabel(items)
+  const icon = toolGroupIcon(items)
+  const diffResults = items.filter(t => t.diffResult)
+
+  return (
+    <div className={`tool-group ${isDone ? 'done' : 'running'} ${hasError ? 'has-error' : ''}`}>
+      <button className="tool-group-header" onClick={() => setExpanded(v => !v)}>
+        <span className="tool-group-icon">{icon}</span>
+        <span className="tool-group-label">{label}</span>
+        {!isDone && <Loader2 size={11} className="spin tool-group-spinner" />}
+        {isDone && !hasError && <Check size={11} className="tool-group-check" />}
+        {hasError && <AlertTriangle size={11} className="tool-group-error" />}
+        <span className="tool-group-chevron">{expanded ? '▲' : '▼'}</span>
+      </button>
+      {/* diff結果は常時表示（折りたたみ外） */}
+      {diffResults.map((t, i) => (
+        <DiffResultView key={i} diffResult={t.diffResult} />
+      ))}
+      {expanded && (
+        <div className="tool-group-details">
+          {items.map((t, i) => (
+            <div key={i} className="tool-detail-row">
+              <span className="tool-detail-name">{t.tool}</span>
+              {t.tool === 'run_command' && <span className="tool-detail-args">$ {t.args?.command}</span>}
+              {t.tool === 'web_search' && <span className="tool-detail-args">"{t.args?.query}"</span>}
+              {['read_file','write_file','apply_diff'].includes(t.tool) && <span className="tool-detail-args">{t.args?.path}</span>}
+              {t.result && (
+                <span className={`tool-detail-result ${t.result.error && t.result.error !== 'already_applied' ? 'error' : 'ok'}`}>
+                  {t.result.error && t.result.error !== 'already_applied' ? `✕ ${t.result.error}` : '✓'}
+                </span>
+              )}
+            </div>
+          ))}
+          {/* cmdのstdout表示 */}
+          {items.filter(t => t.tool === 'run_command' && t.result?.stdout).map((t, i) => (
+            <pre key={i} className="cmd-output">{(t.result.stdout + (t.result.stderr || '')).slice(0, 800)}</pre>
+          ))}
+          {/* 検索結果 */}
+          {items.filter(t => t.tool === 'web_search' && t.result?.results).flatMap((t, i) =>
+            (t.result.results || []).slice(0, 3).map((r, j) => (
+              <div key={`${i}-${j}`} className="search-result">
+                <div className="search-result-url">{r.url}</div>
+                <div className="search-result-snippet">{r.snippet}</div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ToolCallBadge({ tool, args }) {
   const [diffExpanded, setDiffExpanded] = useState(false)
   const icons = { web_search: <Globe size={13} />, run_command: <Terminal size={13} />, apply_diff: <Code2 size={13} />, search_files: <Search size={13} />, fetch_url: <Globe size={13} />, copy_to_output: <Download size={13} /> }
@@ -341,8 +469,8 @@ function ToolCallBadge({ tool, args }) {
   else if (tool === 'fetch_url') argsDisplay = args.url
   else if (tool === 'apply_diff') {
     const diffLines = (args.diff || '').split('\n')
-    const added = diffLines.filter(l => l.startsWith('+')).length
-    const removed = diffLines.filter(l => l.startsWith('-')).length
+    const added = diffLines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length
+    const removed = diffLines.filter(l => l.startsWith('-') && !l.startsWith('---')).length
     argsDisplay = (
       <span style={{display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap'}}>
         <span>{args.path}</span>
@@ -594,6 +722,7 @@ function MessageList({ messages, onRetry, onEditSend, activeChatId }) {
             <ReactMarkdown>{msg.content}</ReactMarkdown>
           </div>
         )
+        if (msg.type === 'tool_group') return <ToolGroup key={i} group={msg} />
         if (msg.type === 'tool_call') return <ToolCallBadge key={i} tool={msg.tool} args={msg.args} />
         if (msg.type === 'tool_result') return <ToolResultView key={i} tool={msg.tool} result={msg.result} />
         if (msg.type === 'diff_summary') return (
@@ -746,26 +875,42 @@ export default function App() {
       // DBの全メッセージ（tool_call/tool_result含む）を復元
       const rebuilt = []
       let dbIdx = 0
+      const addToolEvent = (type, tool, data) => {
+        if (type === 'tool_call') {
+          const last = rebuilt[rebuilt.length - 1]
+          if (last && last.type === 'tool_group') {
+            last.items.push({ tool, args: data })
+          } else {
+            rebuilt.push({ type: 'tool_group', items: [{ tool, args: data }] })
+          }
+        } else {
+          // tool_result: 直近のtool_groupで該当ツールにresultをセット
+          for (let i = rebuilt.length - 1; i >= 0; i--) {
+            if (rebuilt[i].type === 'tool_group') {
+              const items = rebuilt[i].items
+              for (let j = items.length - 1; j >= 0; j--) {
+                if (items[j].tool === tool && items[j].result === undefined) {
+                  items[j] = { ...items[j], result: data }
+                  break
+                }
+              }
+              break
+            }
+          }
+        }
+      }
       for (const m of chat.messages) {
         if (m.msg_type === 'tool_call' || m.msg_type === 'tool_result') {
           try {
             const parsed = JSON.parse(m.content)
-            if (parsed.tool === 'respond_to_user') { /* skip */ }
-            else if (m.msg_type === 'tool_call') {
-              rebuilt.push({ type: 'tool_call', tool: parsed.tool, args: parsed.args })
-            } else {
-              rebuilt.push({ type: 'tool_result', tool: parsed.tool, result: parsed.result })
-            }
+            if (m.msg_type === 'tool_call') addToolEvent('tool_call', parsed.tool, parsed.args)
+            else addToolEvent('tool_result', parsed.tool, parsed.result)
           } catch {}
         } else if (m.role === 'tool') {
-          // msg_typeがtextのtoolロールは無視（JSONパースできないものは表示しない）
           try {
             const parsed = JSON.parse(m.content)
-            if (parsed.args !== undefined) {
-              rebuilt.push({ type: 'tool_call', tool: parsed.tool, args: parsed.args })
-            } else if (parsed.result !== undefined) {
-              rebuilt.push({ type: 'tool_result', tool: parsed.tool, result: parsed.result })
-            }
+            if (parsed.args !== undefined) addToolEvent('tool_call', parsed.tool, parsed.args)
+            else if (parsed.result !== undefined) addToolEvent('tool_result', parsed.tool, parsed.result)
           } catch {}
         } else if (m.role === 'user') {
           rebuilt.push({ type: 'user', content: m.content, dbIndex: dbIdx })
@@ -805,120 +950,91 @@ export default function App() {
       setMessages(prev => [...prev.filter(m => m.type !== 'thinking' && m.type !== 'streaming'), { type: 'text', content: msg.content }])
     })
     on('tool_call', (msg) => {
-      // respond_to_userは表示しない
-      if (msg.tool === 'respond_to_user') return
-      // apply_diffのtool_callはオプティミスティック表示（行数を先出し）
-      if (msg.tool === 'apply_diff') {
-        const diffText = msg.args?.diff || ''
-        const path = msg.args?.path || ''
-        const lines = diffText.split('\n')
-        const added = lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length
-        const removed = lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length
-        setMessages(prev => {
-          const withoutThinking = prev.filter(m => m.type !== 'thinking')
-          const lastDiffIdx = [...withoutThinking].map((m, i) => ({ m, i }))
-            .filter(({ m }) => m.type === 'diff_summary').pop()?.i ?? -1
-          if (lastDiffIdx >= 0) {
-            const prev2 = [...withoutThinking]
-            const summary = { ...prev2[lastDiffIdx] }
-            const existing = summary.files[path] || { added: 0, removed: 0 }
-            summary.files = {
-              ...summary.files,
-              [path]: { added: existing.added + added, removed: existing.removed + removed, status: 'pending' }
-            }
-            prev2[lastDiffIdx] = summary
-            return prev2
-          } else {
-            return [...withoutThinking, {
-              type: 'diff_summary',
-              files: { [path]: { added, removed, status: 'pending' } }
-            }]
+      setMessages(prev => {
+        const withoutThinking = prev.filter(m => m.type !== 'thinking')
+        const last = withoutThinking[withoutThinking.length - 1]
+        // 直前がtool_groupならそこに追加
+        if (last && last.type === 'tool_group') {
+          const updated = [...withoutThinking]
+          updated[updated.length - 1] = {
+            ...last,
+            items: [...last.items, { tool: msg.tool, args: msg.args }]
           }
-        })
-        return
-      }
-      setMessages(prev => [...prev.filter(m => m.type !== 'thinking'), { type: 'tool_call', tool: msg.tool, args: msg.args }])
+          return updated
+        }
+        // 新規グループ作成
+        return [...withoutThinking, { type: 'tool_group', items: [{ tool: msg.tool, args: msg.args }] }]
+      })
     })
     on('cmd_stream', (msg) => {
       setMessages(prev => {
+        // tool_groupの最後のrun_commandにストリーミングを追記
         const last = prev[prev.length - 1]
-        if (last && last.type === 'cmd_streaming') {
-          return [...prev.slice(0, -1), { ...last, lines: [...last.lines, msg.line] }]
+        if (last && last.type === 'tool_group') {
+          const items = [...last.items]
+          const lastCmd = [...items].reverse().find(t => t.tool === 'run_command')
+          if (lastCmd) {
+            const idx = items.lastIndexOf(lastCmd)
+            items[idx] = { ...lastCmd, streaming: [...(lastCmd.streaming || []), msg.line] }
+            return [...prev.slice(0, -1), { ...last, items }]
+          }
         }
-        return [...prev, { type: 'cmd_streaming', lines: [msg.line] }]
+        return prev
       })
     })
     on('tool_result', (msg) => {
-      // respond_to_userは表示しない
-      if (msg.tool === 'respond_to_user') return
-      // cmd_streamingを確定されたtool_resultに置き換え
       setMessages(prev => {
-        const withoutStreaming = prev.filter(m => m.type !== 'cmd_streaming')
-
-        // apply_diffの結果でdiff_summaryを確定
-        if (msg.tool === 'apply_diff') {
-          const path = msg.result?.path || ''
-          if (msg.result?.success) {
-            const added = msg.result.lines_changed ?? 0
-            const removed = msg.result.lines_removed ?? 0
-            // pendingエントリを確定値で上書き
-            const lastDiffIdx = [...withoutStreaming].map((m, i) => ({ m, i }))
-              .filter(({ m }) => m.type === 'diff_summary').pop()?.i ?? -1
-            if (lastDiffIdx >= 0) {
-              const prev2 = [...withoutStreaming]
-              const summary = { ...prev2[lastDiffIdx] }
-              const existing = summary.files[path] || { added: 0, removed: 0 }
-              // 既にpendingで表示されてた分があればそれを確定値で置換
-              summary.files = {
-                ...summary.files,
-                [path]: { added: existing.status === 'pending' ? added : existing.added + added,
-                          removed: existing.status === 'pending' ? removed : existing.removed + removed,
-                          status: 'ok' }
+        // tool_groupの該当ツールにresultをセット
+        const updated = [...prev]
+        for (let i = updated.length - 1; i >= 0; i--) {
+          if (updated[i].type === 'tool_group') {
+            const items = [...updated[i].items]
+            // resultのないものから逆順で探して最初にヒットしたものを更新
+            for (let j = items.length - 1; j >= 0; j--) {
+              if (items[j].tool === msg.tool && items[j].result === undefined) {
+                items[j] = { ...items[j], result: msg.result }
+                break
               }
-              prev2[lastDiffIdx] = summary
-              return prev2
-            } else {
-              return [...withoutStreaming, {
-                type: 'diff_summary',
-                files: { [path]: { added, removed, status: 'ok' } }
-              }]
             }
-          } else {
-            // 失敗: pendingエントリを削除
-            const lastDiffIdx = [...withoutStreaming].map((m, i) => ({ m, i }))
-              .filter(({ m }) => m.type === 'diff_summary').pop()?.i ?? -1
-            if (lastDiffIdx >= 0) {
-              const prev2 = [...withoutStreaming]
-              const summary = { ...prev2[lastDiffIdx] }
-              const files = { ...summary.files }
-              if (files[path]?.status === 'pending') delete files[path]
-              if (Object.keys(files).length === 0) {
-                prev2.splice(lastDiffIdx, 1)
-              } else {
-                summary.files = files
-                prev2[lastDiffIdx] = summary
-              }
-              return prev2
-            }
+            updated[i] = { ...updated[i], items }
+            break
           }
-          return withoutStreaming
         }
-
-        return [...withoutStreaming, { type: 'tool_result', tool: msg.tool, result: msg.result }]
+        // copy_to_output/write_file/apply_diffの後処理
+        if (msg.tool === 'copy_to_output' && msg.result?.success) {
+          refreshOutputs()
+          const fname = msg.result.output_path?.split('/').pop() || ''
+          if (fname) setPendingOutputFiles(p => [...p, { name: fname, path: msg.result.output_path }])
+        }
+        if (['write_file','apply_diff'].includes(msg.tool) && msg.result?.output_copied) {
+          refreshOutputs()
+          const outPath = msg.result.output_copied
+          const fname = outPath.split('/').pop()
+          if (fname) setPendingOutputFiles(p => [...p, { name: fname, path: outPath }])
+        }
+        if (['write_file','apply_diff','delete_file'].includes(msg.tool) && msg.result?.success) refreshFiles()
+        return updated
       })
-      if (msg.tool === 'copy_to_output' && msg.result?.success) {
-        refreshOutputs()
-        const fname = msg.result.output_path?.split('/').pop() || ''
-        if (fname) setPendingOutputFiles(prev => [...prev, { name: fname, path: msg.result.output_path }])
-      }
-      // write_file / apply_diff で output_copied があればダウンロード可能に
-      if (['write_file','apply_diff'].includes(msg.tool) && msg.result?.output_copied) {
-        refreshOutputs()
-        const outPath = msg.result.output_copied
-        const fname = outPath.split('/').pop()
-        if (fname) setPendingOutputFiles(prev => [...prev, { name: fname, path: outPath }])
-      }
-      if (['write_file','apply_diff','delete_file'].includes(msg.tool) && msg.result?.success) refreshFiles()
+    })
+    on('diff_result', (msg) => {
+      // tool_groupの該当apply_diffにdiffResultをセット（リアルタイム表示）
+      setMessages(prev => {
+        const updated = [...prev]
+        for (let i = updated.length - 1; i >= 0; i--) {
+          if (updated[i].type === 'tool_group') {
+            const items = [...updated[i].items]
+            for (let j = items.length - 1; j >= 0; j--) {
+              if (items[j].tool === 'apply_diff' && items[j].args?.path === msg.path && !items[j].diffResult) {
+                items[j] = { ...items[j], diffResult: msg }
+                break
+              }
+            }
+            updated[i] = { ...updated[i], items }
+            break
+          }
+        }
+        return updated
+      })
     })
     on('approval_request', (msg) => {
       setMessages(prev => [...prev.filter(m => m.type !== 'thinking')])
