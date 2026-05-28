@@ -695,7 +695,12 @@ async def dispatch_tool(name, args, session_dir, ws=None):
     }
     for req in _required.get(name, []):
         if req not in args:
-            return {"error": f"{name} called without required argument '{req}'. Please retry with all required arguments."}
+            hint = ""
+            if name == "apply_diff" and req == "diff":
+                hint = " IMPORTANT: The 'diff' argument must contain the full patch text (*** Begin Patch ... *** End Patch). Do NOT call apply_diff without the diff content."
+            elif name == "search_in_file" and req == "pattern":
+                hint = " The 'pattern' argument must be a regex or string to search for."
+            return {"error": f"{name} called without required argument '{req}'.{hint} Please retry with all required arguments."}
 
     if name == "list_files":
         return tool_list_files(path=args.get("path", "."), session_dir=sd)
@@ -1148,16 +1153,56 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     "Do NOT stop until all changes are complete and you send a final summary."
                 ))]))
                 continue
-            # patchをテキストとして出力してしまった場合を検出してapply_diffを促す
+            # patchをテキストとして出力してしまった場合を検出して自動適用
             if "*** Begin Patch" in text or "*** Update File" in text:
-                logger.warning("[Inject] patch output as text detected — redirecting to apply_diff")
-                await ws.send_json({"type": "stream", "content": "⚠️ パッチをテキスト出力しました。apply_diffツールで適用します..."})
-                messages.append(types.Content(role="user", parts=[types.Part(text=(
-                    "[SYSTEM] CRITICAL ERROR: You output a *** Begin Patch block as plain text. "
-                    "That does NOT modify any file. The patch was NOT applied. "
-                    "You MUST immediately call apply_diff with that patch content as the 'diff' argument. "
-                    "Do it NOW — call the tool, do not output text again."
-                ))]))
+                logger.warning("[Inject] patch output as text detected — auto-applying")
+                # テキストからパッチブロックとファイルパスを抽出して自動適用
+                import re as _re
+                _patch_match = _re.search(r'(\*\*\* Begin Patch.*?\*\*\* End Patch)', text, _re.DOTALL)
+                _file_match = _re.search(r'\*\*\* Update File:\s*(\S+)', text)
+                if _patch_match and _file_match:
+                    _patch_text = _patch_match.group(1)
+                    _patch_path = _file_match.group(1).strip()
+                    logger.info(f"[Inject] auto-applying patch to {_patch_path} (len={len(_patch_text)})")
+                    await ws.send_json({"type": "stream", "content": f"⚠️ パッチをテキスト出力しました。自動適用します ({_patch_path})..."})
+                    _apply_result = await dispatch_tool("apply_diff", {"path": _patch_path, "diff": _patch_text}, session_dir, ws=ws)
+                    await ws.send_json({"type": "tool_result", "tool": "apply_diff", "result": _apply_result})
+                    # スナップショット更新とdiff送信
+                    if _apply_result.get("success"):
+                        _snap_path_auto = session_dir / _patch_path
+                        _fkey_auto = str(_snap_path_auto)
+                        if _snap_path_auto.exists():
+                            import difflib as _dl
+                            _after_auto = _snap_path_auto.read_text(errors="replace")
+                            _origin_auto = _file_snapshots.get(_fkey_auto, "")
+                            _udiff_auto = list(_dl.unified_diff(
+                                _origin_auto.splitlines(keepends=True),
+                                _after_auto.splitlines(keepends=True),
+                                fromfile=f"a/{_patch_path}", tofile=f"b/{_patch_path}", n=3
+                            ))
+                            added_a = sum(1 for l in _udiff_auto if l.startswith('+') and not l.startswith('+++'))
+                            removed_a = sum(1 for l in _udiff_auto if l.startswith('-') and not l.startswith('---'))
+                            if added_a > 0 or removed_a > 0:
+                                await ws.send_json({"type": "diff_result", "path": _patch_path,
+                                                    "added": added_a, "removed": removed_a, "diff": "".join(_udiff_auto)})
+                        tool_response_parts_auto = [types.Part(
+                            function_response=types.FunctionResponse(name="apply_diff", response=_apply_result)
+                        )]
+                        messages.append(types.Content(role="model", parts=[types.Part(text=text)]))
+                        messages.append(types.Content(role="user", parts=tool_response_parts_auto))
+                    else:
+                        messages.append(types.Content(role="user", parts=[types.Part(text=(
+                            f"[SYSTEM] Auto-apply failed: {_apply_result.get('error','unknown')}. "
+                            "Call apply_diff manually with the correct diff and path arguments."
+                        ))]))
+                else:
+                    await ws.send_json({"type": "stream", "content": "⚠️ パッチをテキスト出力しました。apply_diffツールで適用してください。"})
+                    messages.append(types.Content(role="user", parts=[types.Part(text=(
+                        "[SYSTEM] CRITICAL ERROR: You output a *** Begin Patch block as plain text. "
+                        "That does NOT modify any file. The patch was NOT applied. "
+                        "You MUST immediately call apply_diff with that patch content as the 'diff' argument. "
+                        "Do it NOW — call the tool, do not output text again."
+                    ))]))
                 continue
             save_message(chat_id, "assistant", text)
             break
@@ -1245,6 +1290,13 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                                 # cp直後の内容 = input側の内容。これを基点にすれば「inputからの変更」が累積diffになる
                                 _file_snapshots[dest_key] = dest_path.read_text(errors="replace")
                                 logger.info(f"[Snapshot] set snapshot for {dest} after cp (base for cumulative diff)")
+                                # .diff_appliedマーカーをクリア（cp後は同じdiffを再適用できるようにする）
+                                marker_dir = session_dir / ".diff_applied"
+                                if marker_dir.exists():
+                                    dest_stem = dest_path.name
+                                    for m in marker_dir.glob(f"{dest_stem}_*"):
+                                        m.unlink(missing_ok=True)
+                                    logger.info(f"[Snapshot] cleared diff markers for {dest_stem} after cp")
                     except Exception as e:
                         logger.warning(f"[Snapshot] cp detect failed: {e}")
 
