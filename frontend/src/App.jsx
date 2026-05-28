@@ -740,7 +740,6 @@ function MessageList({ messages, onRetry, onEditSend, activeChatId, diffResults 
           </div>
         )
         if (msg.type === 'tool_group') return <ToolGroup key={i} group={msg} />
-        if (msg.type === 'file_diff') return <DiffResultView key={'diff_' + msg.path + '_' + i} diffResult={msg} />
         if (msg.type === 'tool_call') return <ToolCallBadge key={i} tool={msg.tool} args={msg.args} />
         if (msg.type === 'tool_result') return <ToolResultView key={i} tool={msg.tool} result={msg.result} />
         if (msg.type === 'diff_summary') return (
