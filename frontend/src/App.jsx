@@ -840,6 +840,8 @@ export default function App() {
   const [pendingOutputFiles, setPendingOutputFiles] = useState([])
   const [agentStatus, setAgentStatus] = useState(null)  // リアルタイムステータス
   const [diffResults, setDiffResults] = useState({})  // path -> {added, removed, diff}
+  const setMessagesRef = useRef(null)
+  setMessagesRef.current = setMessages
   const textareaRef = useRef(null)
 
   // 認証チェック
@@ -1043,9 +1045,11 @@ export default function App() {
         try { sessionStorage.setItem('diffResults_' + activeChatId, JSON.stringify(updated)) } catch {}
         return updated
       })
-      // messages にも差し込む（同パスは上書き、なければ末尾に追加）
+      // setMessagesRefを使って常に最新のsetMessagesを呼ぶ
       const diffEntry = { type: 'file_diff', ...msg }
-      setMessages(prev => {
+      console.log('[diff_result] calling setMessages with', diffEntry)
+      setMessagesRef.current(prev => {
+        console.log('[diff_result] prev messages count:', prev.length)
         let lastIdx = -1
         for (let i = prev.length - 1; i >= 0; i--) {
           if (prev[i].type === 'file_diff' && prev[i].path === msg.path) { lastIdx = i; break }
