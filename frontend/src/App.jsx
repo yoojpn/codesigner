@@ -1014,7 +1014,11 @@ export default function App() {
     })
     on('diff_result', (msg) => {
       console.log('[diff_result] received:', msg)
-      setDiffResults(prev => ({ ...prev, [msg.path]: msg }))
+      setDiffResults(prev => {
+        const updated = { ...prev, [msg.path]: msg }
+        try { sessionStorage.setItem('diffResults_' + activeChatId, JSON.stringify(updated)) } catch {}
+        return updated
+      })
     })
     on('approval_request', (msg) => {
       setMessages(prev => [...prev.filter(m => m.type !== 'thinking')])
@@ -1083,6 +1087,7 @@ export default function App() {
     setPendingOutputFiles([])
     setLoading(false)
     setPendingApproval(null)
+    try { setDiffResults(JSON.parse(sessionStorage.getItem('diffResults_' + id) || '{}')) } catch { setDiffResults({}) }
   }
 
   async function createChat() {
@@ -1112,6 +1117,7 @@ export default function App() {
     const text = (overrideText ?? input).trim()
     if (!text || loading || !connected || !activeChatId) return
     setDiffResults({})  // タスク開始時にdiffをリセット
+    try { sessionStorage.removeItem('diffResults_' + activeChatId) } catch {}
     setMessages(prev => {
       const userCount = prev.filter(m => m.type === 'user').length
       return [...prev, { type: 'user', content: text, dbIndex: userCount }, { type: 'thinking' }]
