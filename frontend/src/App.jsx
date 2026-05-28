@@ -1038,26 +1038,15 @@ export default function App() {
       })
     })
     on('diff_result', (msg) => {
-      console.log('[diff_result] received:', msg)
-      // sessionStorage に保存
-      setDiffResults(prev => {
-        const updated = { ...prev, [msg.path]: msg }
-        try { sessionStorage.setItem('diffResults_' + activeChatId, JSON.stringify(updated)) } catch {}
-        return updated
-      })
-      // setMessagesRefを使って常に最新のsetMessagesを呼ぶ
-      const diffEntry = { type: 'file_diff', ...msg }
-      console.log('[diff_result] calling setMessages with', diffEntry)
+      console.log('[diff_result] inserting:', msg.path, '+'+msg.added, '-'+msg.removed)
+      const diffEntry = { type: 'file_diff', path: msg.path, added: msg.added, removed: msg.removed, diff: msg.diff }
       setMessagesRef.current(prev => {
-        console.log('[diff_result] prev messages count:', prev.length)
         let lastIdx = -1
         for (let i = prev.length - 1; i >= 0; i--) {
           if (prev[i].type === 'file_diff' && prev[i].path === msg.path) { lastIdx = i; break }
         }
         if (lastIdx !== -1) {
-          const next = [...prev]
-          next[lastIdx] = diffEntry
-          return next
+          const next = [...prev]; next[lastIdx] = diffEntry; return next
         }
         return [...prev, diffEntry]
       })
