@@ -302,25 +302,26 @@ def tool_apply_diff(path, diff, *, session_dir):
         if hint is not None:
             search_order.sort(key=lambda x: abs(x - hint))
 
-        # 段階1: 完全一致
-        for i in search_order:
-            if all(i+k < len(file_lines) and
-                   file_lines[i+k].rstrip("\n\r") == search_lines[k].rstrip("\n\r")
-                   for k in range(n)):
-                return i
-        # 段階2: strip一致
-        for i in search_order:
-            if all(i+k < len(file_lines) and
-                   file_lines[i+k].rstrip("\n\r").strip() == search_lines[k].rstrip("\n\r").strip()
-                   for k in range(n)):
-                return i
-        # 段階3: 空白正規化（バッククォート・${}など特殊文字を含む行に有効）
-        for i in search_order:
-            if all(i+k < len(file_lines) and
-                   normalize_line(file_lines[i+k]) == normalize_line(search_lines[k])
-                   for k in range(n)):
-                return i
-        # fuzzyマッチは廃止: O(n^2)のSequenceMatcherが大きいファイルで数十分ハングする原因
+        def _line_eq(a, b, mode):
+            a = a.rstrip("\n\r")
+            b = b.rstrip("\n\r")
+            if mode == 1: return a == b
+            if mode == 2: return a.strip() == b.strip()
+            if mode == 3: return normalize_line(a) == normalize_line(b)
+            return False
+
+        for mode in (1, 2, 3):
+            for i in search_order:
+                if all(i+k < len(file_lines) and _line_eq(file_lines[i+k], search_lines[k], mode)
+                       for k in range(n)):
+                    return i
+
+        # 段階4: hintがある場合、最初の行だけ一致すれば位置を返す（アンカー行のみマッチ）
+        if hint is not None:
+            for mode in (1, 2, 3):
+                for i in search_order[:20]:  # hint周辺20行に限定
+                    if i < len(file_lines) and _line_eq(file_lines[i], search_lines[0], mode):
+                        return i
         return None
 
     def _make_hint(search_lines, file_lines):
@@ -366,12 +367,15 @@ def tool_apply_diff(path, diff, *, session_dir):
                     if anchor_text:
                         for li, fl in enumerate(result_lines):
                             if anchor_text.strip() and anchor_text.strip() in fl:
-                                hint = li + offset
+                                hint = li  # result_linesはすでにoffset反映済み
                                 break
                     best_pos = _find_block(result_lines, search_lines, hint=hint)
                     if best_pos is None:
-                        hunk_errors.append(f"V4A hunk '{anchor_text[:60]}': match failed" + _make_hint(search_lines, result_lines))
-                        continue
+                        err_msg = f"V4A hunk '{anchor_text[:60]}': match failed" + _make_hint(search_lines, result_lines)
+                        hunk_errors.append(err_msg)
+                        # 失敗時は即座にエラー返却（後続hunkが行ずれで連鎖失敗するのを防ぐ）
+                        marker.unlink(missing_ok=True)
+                        return {"error": "V4A patch failed:\n" + "\n".join(hunk_errors)}
                     j = best_pos
                     for hl in hunk_body:
                         if not hl:
