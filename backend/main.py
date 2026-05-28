@@ -1,4 +1,6 @@
-import os, json, asyncio, subprocess, shutil, httpx, re, uuid, sqlite3
+import os, json, asyncio, subprocess, shutil, httpx, re, uuid, sqlite3, logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("codesigner")
 from pathlib import Path
 from datetime import datetime
 from contextlib import contextmanager
@@ -1063,6 +1065,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
                     announced_tools = set()
 
+                    logger.info(f"[Gemini] calling model={model} key=...{try_key[-6:]} msgs={len(messages)} thinking={_tlevel}")
                     async for chunk in await try_client.aio.models.generate_content_stream(
                         model=model, contents=messages, config=gen_config
                     ):
@@ -1086,6 +1089,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                                     label = _tool_status_label(fc_name, fc_args)
                                     await ws.send_json({"type": "agent_status", "label": label, "tool": fc_name, "args": fc_args})
 
+                    logger.info(f"[Gemini] done: text_len={len(accumulated_text)} tool_calls={len(tool_calls)}")
                     if accumulated_text:
                         await ws.send_json({"type": "stream_end"})
 
@@ -1094,6 +1098,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     break
                 except Exception as e:
                     err_str = str(e)
+                    logger.error(f"[Gemini] error model={model} key=...{try_key[-6:]}: {err_str[:200]}")
                     if any(x in err_str for x in ("503", "500", "UNAVAILABLE", "INTERNAL", "429", "RESOURCE_EXHAUSTED")):
                         last_err = e
                         await asyncio.sleep(1)
@@ -1142,6 +1147,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                 _recent_tool_calls.clear()
                 continue
 
+            logger.info(f"[Tool] {name} args={str(args)[:120]}")
             save_message(chat_id, "tool", json.dumps({"tool": name, "args": to_json_safe(args)}), msg_type="tool_call")
             await ws.send_json({"type": "tool_call", "tool": name, "args": to_json_safe(args)})
 
@@ -1337,6 +1343,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
         )
         if tool_calls and _is_stalling:
             # ターン数に応じてメッセージを強化
+            logger.warning(f"[Inject] stalling detected: text={repr(text[:60])} tool_calls={len(tool_calls)}")
             _inject = (
                 "[SYSTEM] CRITICAL: You stopped mid-task. This is not acceptable. "
                 "You MUST continue immediately. Do NOT output any text explanation — just call the next tool. "
@@ -1347,6 +1354,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
             messages.append(types.Content(role="user", parts=[types.Part(text=_inject)]))
         # ツール呼び出しがあった場合は継続（AIはまだ作業中）
 
+    logger.info("[Agent] done")
     await ws.send_json({"type": "done"})
     return messages
 
