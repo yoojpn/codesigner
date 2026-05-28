@@ -409,8 +409,6 @@ function ToolGroup({ group }) {
   const hasError = items.some(t => t.result?.error && t.result?.error !== 'already_applied')
   const label = toolGroupLabel(items)
   const icon = toolGroupIcon(items)
-  const diffResults = items.filter(t => t.diffResult)
-
   return (
     <div className={`tool-group ${isDone ? 'done' : 'running'} ${hasError ? 'has-error' : ''}`}>
       <button className="tool-group-header" onClick={() => setExpanded(v => !v)}>
@@ -421,10 +419,6 @@ function ToolGroup({ group }) {
         {hasError && <AlertTriangle size={11} className="tool-group-error" />}
         <span className="tool-group-chevron">{expanded ? '▲' : '▼'}</span>
       </button>
-      {/* diff結果は常時表示（折りたたみ外） */}
-      {diffResults.map((t, i) => (
-        <DiffResultView key={i} diffResult={t.diffResult} />
-      ))}
       {expanded && (
         <div className="tool-group-details">
           {items.map((t, i) => (
@@ -723,6 +717,7 @@ function MessageList({ messages, onRetry, onEditSend, activeChatId }) {
           </div>
         )
         if (msg.type === 'tool_group') return <ToolGroup key={i} group={msg} />
+        if (msg.type === 'file_diff') return <DiffResultView key={msg.path} diffResult={msg} />
         if (msg.type === 'tool_call') return <ToolCallBadge key={i} tool={msg.tool} args={msg.args} />
         if (msg.type === 'tool_result') return <ToolResultView key={i} tool={msg.tool} result={msg.result} />
         if (msg.type === 'diff_summary') return (
@@ -1017,42 +1012,15 @@ export default function App() {
       })
     })
     on('diff_result', (msg) => {
-      // 同一ファイルへの累積diff: 全tool_groupを走査して同じpathのdiffResultを最新で上書き
+      // ファイルごとに1枚のfile_diffエントリを管理。既存があれば上書き、なければ追加
       setMessages(prev => {
-        const updated = [...prev]
-        let placed = false
-        // 既存の同ファイルdiffResultを最新で上書き
-        for (let i = 0; i < updated.length; i++) {
-          if (updated[i].type === 'tool_group') {
-            const items = [...updated[i].items]
-            let changed = false
-            for (let j = 0; j < items.length; j++) {
-              if (items[j].tool === 'apply_diff' && items[j].args?.path === msg.path && items[j].diffResult) {
-                items[j] = { ...items[j], diffResult: msg }
-                changed = true
-                placed = true
-              }
-            }
-            if (changed) updated[i] = { ...updated[i], items }
-          }
+        const idx = prev.findIndex(m => m.type === 'file_diff' && m.path === msg.path)
+        if (idx !== -1) {
+          const updated = [...prev]
+          updated[idx] = { type: 'file_diff', ...msg }
+          return updated
         }
-        // 既存のdiffResultがなければ最後のtool_groupの該当apply_diffにセット
-        if (!placed) {
-          for (let i = updated.length - 1; i >= 0; i--) {
-            if (updated[i].type === 'tool_group') {
-              const items = [...updated[i].items]
-              for (let j = items.length - 1; j >= 0; j--) {
-                if ((items[j].tool === 'apply_diff' || items[j].tool === 'write_file') && items[j].args?.path === msg.path && !items[j].diffResult) {
-                  items[j] = { ...items[j], diffResult: msg }
-                  placed = true
-                  break
-                }
-              }
-              if (placed) { updated[i] = { ...updated[i], items }; break }
-            }
-          }
-        }
-        return updated
+        return [...prev, { type: 'file_diff', ...msg }]
       })
     })
     on('approval_request', (msg) => {
