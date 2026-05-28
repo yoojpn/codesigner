@@ -866,14 +866,19 @@ LOOP PREVENTION — CRITICAL
   you tried and what you need. Never spin in an infinite loop.
 
 ═══════════════════════════════════════════════════════
-COMMUNICATION — NO STALLING
+COMMUNICATION — NO STALLING, NO DECLARATIONS
 ═══════════════════════════════════════════════════════
-- NEVER say "少々お待ちください", "準備しています", "確認します", "調べます",
-  "しばらくお待ちください", "Let me", "I'll", "I will", "I'm going to",
-  "I need to", "First, let me" before calling a tool.
-- Just call the tool silently. If you must explain, do so AFTER the tool results.
-- Do NOT narrate your plan before executing it. Execute first, summarize after.
-- One-sentence acknowledgment maximum before tool calls; zero is preferred.
+ABSOLUTE BAN — Never output these before or instead of tool calls:
+- "実装します", "修正します", "確認します", "調べます", "進めます", "承知しました"
+- "Let me", "I'll", "I will", "I'm going to", "I need to", "Sure", "OK"
+- Any sentence that describes what you are about to do without doing it.
+
+WHY THIS IS BANNED: Outputting "実装します" and then stopping = zero work done.
+The user sees words, the file is unchanged. This is failure, not helpfulness.
+
+RULE: If the next step is a tool call → call the tool. Zero text before it.
+RULE: If you must say something → say it AFTER the tool results, in 1 sentence.
+RULE: "わかりました" alone as a full response = critical failure.
 
 ═══════════════════════════════════════════════════════
 TOOL vs TEXT — CRITICAL RULES, NO EXCEPTIONS
@@ -891,14 +896,24 @@ USE TEXT ONLY when the user asks a question or wants explanation — no file cha
 ═══════════════════════════════════════════════════════
 AGENT CONTINUATION — NEVER STOP MID-TASK
 ═══════════════════════════════════════════════════════
-- After every tool call, keep going until the ENTIRE task is done.
-- NEVER stop after just reading a file. Reading is preparation — editing is the goal.
-- NEVER stop after just one apply_diff when more changes are needed.
-- NEVER output "I'll now..." or "Next I will..." and then stop — DO IT.
-- If you search and find what you need, immediately call apply_diff or write_file next.
-- Only stop and send a final text message when ALL requested changes are complete.
-- If you're unsure what to do next, write a brief text then keep using tools.
-- A task is done only when every file has been edited and the user has received a summary.
+STOPPING EARLY = TASK FAILURE. There are zero acceptable reasons to stop mid-task.
+
+Mandatory flow for ANY file edit task:
+  search_in_file → read_file(start/end) → apply_diff → [repeat for each location] → summary
+
+- After read_file: immediately call apply_diff. Never stop between read and edit.
+- After apply_diff success: immediately check if more locations need editing.
+- After apply_diff failure: immediately retry with corrected patch. Never stop.
+- After all edits: send ONE summary message listing changed files.
+
+Signs you are about to fail (do NOT do these):
+  ✗ Outputting "実装します" without calling a tool next
+  ✗ Stopping after reading one file section
+  ✗ Stopping after one apply_diff when the feature needs 5 more
+  ✗ Outputting "次に〇〇します" and then stopping
+
+The task is done when: every needed file is edited AND user has a summary.
+Until then: keep calling tools.
 
 ═══════════════════════════════════════════════════════
 LARGE CHANGE STRATEGY — MULTIPLE HUNKS IN ONE PATCH
@@ -1019,22 +1034,30 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     tool_calls = []
                     candidate_content = None
 
-                    if thinking_level == "auto":
-                        thinking_on = should_think(user_message)
+                    # thinking_level設定: 3.1 Flash-LiteはThinkingLevel APIをサポート
+                    # high=最高品質(推論モデルに近い), low=コーディングに最適化, none=オフ
+                    if thinking_level in ("on", "high"):
+                        _tlevel = "high"
+                    elif thinking_level == "auto":
+                        _tlevel = "high" if should_think(user_message) else "low"
                     else:
-                        thinking_on = thinking_level in ("on", "high")
+                        _tlevel = "low"  # デフォルトは常にlowで品質を維持（offにしない）
 
-                    thinking_config = types.ThinkingConfig(
-                        thinking_budget=1024 if thinking_on else 0
-                    )
+                    try:
+                        thinking_config = types.ThinkingConfig(thinking_level=_tlevel)
+                    except Exception:
+                        # フォールバック: budgetベース（旧API）
+                        thinking_config = types.ThinkingConfig(
+                            thinking_budget=2048 if _tlevel == "high" else 512
+                        )
 
                     gen_config = types.GenerateContentConfig(
-                        system_instruction=make_system_prompt(session_dir, thinking_on=thinking_on),
+                        system_instruction=make_system_prompt(session_dir),
                         tools=TOOL_DEFS,
                         tool_config=types.ToolConfig(
                             function_calling_config=types.FunctionCallingConfig(mode="AUTO")
                         ),
-                        temperature=0.3,
+                        temperature=0.2,
                         thinking_config=thinking_config,
                     )
 
@@ -1268,6 +1291,25 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
         messages.append(types.Content(role="user", parts=tool_response_parts))
 
+        # コンテキストクリーンアップ: messagesが長くなりすぎたら古いtool履歴を圧縮
+        # diff失敗ログが積み重なると品質が落ちるため、20ターンを超えたら古いツール履歴を削除
+        if len(messages) > 20:
+            # user/modelのテキストメッセージは保持、古いtool_responseのみ削除
+            _keep = []
+            _tool_count = 0
+            for _m in reversed(messages):
+                _has_tool_resp = (
+                    hasattr(_m, 'parts') and _m.parts and
+                    any(hasattr(p, 'function_response') and p.function_response for p in _m.parts)
+                )
+                if _has_tool_resp:
+                    _tool_count += 1
+                    if _tool_count <= 10:  # 直近10ターン分のtool responseは保持
+                        _keep.append(_m)
+                else:
+                    _keep.append(_m)
+            messages = list(reversed(_keep))
+
         # diff失敗が多すぎる場合は終了
         if diff_fail_count >= MAX_DIFF_RETRIES:
             msg = "複数のdiff適用に繰り返し失敗しました。対象ファイルを確認し、write_fileで全体を書き直すアプローチを検討してください。"
@@ -1280,14 +1322,29 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
         if has_diff_error:
             continue
 
-        # Gemini Flash 途中停止対策:
-        # ツール呼び出しのみ（テキストなし）で止まった場合、「続けて」インジェクション
-        # これはGemini Flashが1ターンで止まる既知のバグへの対処
-        if tool_calls and not text:
-            messages.append(types.Content(
-                role="user",
-                parts=[types.Part(text="[SYSTEM] Continue with the remaining tasks. Do not stop until the entire task is complete. If you have made all changes, send a summary message to the user.")]
-            ))
+        # Gemini Flash 途中停止対策 (issue #15772):
+        # ツールを呼んだ後にテキストなしで止まる既知のバグへの対処。
+        # さらに「わかりました、やります」系の短いテキストで止まるケースも対処。
+        _stall_texts = [
+            "続けます", "実装します", "修正します", "確認します", "やります",
+            "承知", "了解", "わかりました", "進めます", "行います",
+            "implement", "continue", "proceed", "i'll", "i will", "let me", "sure"
+        ]
+        _text_lower = text.strip().lower() if text else ""
+        _is_stalling = (
+            not text  # テキストなしで止まった
+            or (len(text.strip()) < 80 and any(s in _text_lower for s in _stall_texts))  # 短い宣言で止まった
+        )
+        if tool_calls and _is_stalling:
+            # ターン数に応じてメッセージを強化
+            _inject = (
+                "[SYSTEM] CRITICAL: You stopped mid-task. This is not acceptable. "
+                "You MUST continue immediately. Do NOT output any text explanation — just call the next tool. "
+                "Keep calling tools until ALL changes are complete. "
+                "Task is done ONLY when every file is edited and you send a final summary. "
+                "Call the next tool NOW."
+            )
+            messages.append(types.Content(role="user", parts=[types.Part(text=_inject)]))
         # ツール呼び出しがあった場合は継続（AIはまだ作業中）
 
     await ws.send_json({"type": "done"})
