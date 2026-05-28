@@ -1406,6 +1406,34 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                 file_path = args.get("path", "")
                 if file_path in diff_fail_per_file:
                     del diff_fail_per_file[file_path]
+                # 重複実装チェック: パッチで追加した識別子がファイルに2回以上あれば警告
+                import re as _re3
+                _diff_text = args.get("diff", "")
+                _added_ids = set()
+                for _dl in _diff_text.splitlines():
+                    if not (_dl.startswith("+") and not _dl.startswith("+++")):
+                        continue
+                    # id="xxx", function xxx, class xxx, def xxx などを抽出
+                    for _pat in [r'id=["\']([\w-]+)["\']', r'function\s+(\w+)\s*\\(', r'def\s+(\w+)\s*\\(', r'class[=\s]["\']([\w-]+)["\']']:
+                        for _m in _re3.findall(_pat, _dl):
+                            if len(_m) > 4:
+                                _added_ids.add(_m)
+                if _added_ids and file_path:
+                    _fpath_dup = session_dir / file_path
+                    if _fpath_dup.exists():
+                        _ftext = _fpath_dup.read_text(errors="replace")
+                        _dups = [_id for _id in _added_ids if _ftext.count(_id) >= 2]
+                        if _dups:
+                            _dup_warn = (
+                                f"[SYSTEM] DUPLICATE DETECTED after apply_diff on {file_path}. "
+                                f"These identifiers now appear 2+ times in the file: {_dups}. "
+                                f"This means you added something that already existed. "
+                                f"You MUST immediately search_in_file for each duplicate, find the redundant copy, and remove it with apply_diff."
+                            )
+                            logger.warning(f"[DupCheck] duplicates in {file_path}: {_dups}")
+                            tool_response_parts.append(types.Part(
+                                function_response=types.FunctionResponse(name="apply_diff", response={"success": True, "warning": _dup_warn})
+                            ))
 
         messages.append(types.Content(role="user", parts=tool_response_parts))
 
