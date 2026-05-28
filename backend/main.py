@@ -1025,6 +1025,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
     MAX_DIFF_RETRIES = 5  # 全体上限
     MAX_PER_FILE = 3       # 同一ファイルの上限
     _recent_tool_calls: list = []  # ループ検出用（直近の tool:key 履歴）
+    _file_snapshots: dict = {}  # ファイルごとの初回スナップショット（累積diff計算用）
 
     for _ in range(30):
         response = None
@@ -1190,22 +1191,29 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     ))
                     continue
 
-            # apply_diff前のスナップショット
+            # apply_diff前のスナップショット（初回のみ保存して累積diff計算用に使う）
             _snapshot_before = None
-            if name == "apply_diff":
+            if name in ("apply_diff", "write_file"):
                 _snap_path = session_dir / args.get("path", "")
+                _fkey = str(_snap_path)
                 if _snap_path.exists():
                     _snapshot_before = _snap_path.read_text(errors="replace")
+                    # 初回スナップショットを保存（タスク開始時点のファイル状態）
+                    if _fkey not in _file_snapshots:
+                        _file_snapshots[_fkey] = _snapshot_before
 
             result = await dispatch_tool(name, args, session_dir, ws=ws)
 
-            # apply_diff成功時: diffを生成してフロントに送信
-            if name == "apply_diff" and result.get("success") and _snapshot_before is not None:
+            # apply_diff / write_file 成功時: 初回スナップショットとの累積diffを送信
+            if name in ("apply_diff", "write_file") and result.get("success"):
                 import difflib
                 _snap_path2 = session_dir / args.get("path", "")
+                _fkey2 = str(_snap_path2)
                 if _snap_path2.exists():
                     _after = _snap_path2.read_text(errors="replace")
-                    _before_lines = _snapshot_before.splitlines(keepends=True)
+                    # 初回スナップショットがあればそこからの累積diff、なければ空からのdiff
+                    _origin = _file_snapshots.get(_fkey2, "")
+                    _before_lines = _origin.splitlines(keepends=True)
                     _after_lines = _after.splitlines(keepends=True)
                     _udiff = list(difflib.unified_diff(
                         _before_lines, _after_lines,

@@ -1017,20 +1017,39 @@ export default function App() {
       })
     })
     on('diff_result', (msg) => {
-      // tool_groupの該当apply_diffにdiffResultをセット（リアルタイム表示）
+      // 同一ファイルへの累積diff: 全tool_groupを走査して同じpathのdiffResultを最新で上書き
       setMessages(prev => {
         const updated = [...prev]
-        for (let i = updated.length - 1; i >= 0; i--) {
+        let placed = false
+        // 既存の同ファイルdiffResultを最新で上書き
+        for (let i = 0; i < updated.length; i++) {
           if (updated[i].type === 'tool_group') {
             const items = [...updated[i].items]
-            for (let j = items.length - 1; j >= 0; j--) {
-              if (items[j].tool === 'apply_diff' && items[j].args?.path === msg.path && !items[j].diffResult) {
+            let changed = false
+            for (let j = 0; j < items.length; j++) {
+              if (items[j].tool === 'apply_diff' && items[j].args?.path === msg.path && items[j].diffResult) {
                 items[j] = { ...items[j], diffResult: msg }
-                break
+                changed = true
+                placed = true
               }
             }
-            updated[i] = { ...updated[i], items }
-            break
+            if (changed) updated[i] = { ...updated[i], items }
+          }
+        }
+        // 既存のdiffResultがなければ最後のtool_groupの該当apply_diffにセット
+        if (!placed) {
+          for (let i = updated.length - 1; i >= 0; i--) {
+            if (updated[i].type === 'tool_group') {
+              const items = [...updated[i].items]
+              for (let j = items.length - 1; j >= 0; j--) {
+                if ((items[j].tool === 'apply_diff' || items[j].tool === 'write_file') && items[j].args?.path === msg.path && !items[j].diffResult) {
+                  items[j] = { ...items[j], diffResult: msg }
+                  placed = true
+                  break
+                }
+              }
+              if (placed) { updated[i] = { ...updated[i], items }; break }
+            }
           }
         }
         return updated
