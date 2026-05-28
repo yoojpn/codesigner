@@ -506,7 +506,6 @@ a:hover {
   margin: 3px 0;
   border-radius: 7px;
   border: 1px solid var(--border);
-  overflow: hidden;
   background: var(--bg2);
   font-size: 12px;
 }
@@ -535,9 +534,12 @@ a:hover {
 .tool-group-details {
   padding: 6px 10px 8px;
   border-top: 1px solid var(--border);
+  border-radius: 0 0 7px 7px;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  max-height: 400px;
+  overflow-y: auto;
 }
 .tool-detail-row {
   display: flex;
