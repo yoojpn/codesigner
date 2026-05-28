@@ -816,6 +816,7 @@ export default function App() {
   const [thinkingLevel, setThinkingLevel] = useState('none')
   const [pendingOutputFiles, setPendingOutputFiles] = useState([])
   const [agentStatus, setAgentStatus] = useState(null)  // リアルタイムステータス
+  const [diffResults, setDiffResults] = useState({})  // path -> {added, removed, diff}
   const textareaRef = useRef(null)
 
   // 認証チェック
@@ -1013,24 +1014,7 @@ export default function App() {
     })
     on('diff_result', (msg) => {
       console.log('[diff_result] received:', msg)
-      setMessages(prev => {
-        console.log('[diff_result] prev messages count:', prev.length)
-        // 既存のfile_diffがあれば上書き
-        const idx = prev.findIndex(m => m.type === 'file_diff' && m.path === msg.path)
-        if (idx !== -1) {
-          const updated = [...prev]
-          updated[idx] = { type: 'file_diff', ...msg }
-          return updated
-        }
-        // 最後のtool_groupの直後に挿入
-        const lastGroupIdx = prev.reduce((acc, m, i) => m.type === 'tool_group' ? i : acc, -1)
-        if (lastGroupIdx !== -1) {
-          const updated = [...prev]
-          updated.splice(lastGroupIdx + 1, 0, { type: 'file_diff', ...msg })
-          return updated
-        }
-        return [...prev, { type: 'file_diff', ...msg }]
-      })
+      setDiffResults(prev => ({ ...prev, [msg.path]: msg }))
     })
     on('approval_request', (msg) => {
       setMessages(prev => [...prev.filter(m => m.type !== 'thinking')])
@@ -1127,6 +1111,7 @@ export default function App() {
   const sendMessage = useCallback((overrideText) => {
     const text = (overrideText ?? input).trim()
     if (!text || loading || !connected || !activeChatId) return
+    setDiffResults({})  // タスク開始時にdiffをリセット
     setMessages(prev => {
       const userCount = prev.filter(m => m.type === 'user').length
       return [...prev, { type: 'user', content: text, dbIndex: userCount }, { type: 'thinking' }]
@@ -1315,6 +1300,13 @@ export default function App() {
                   style={{display:'contents'}}
                 >
                 <MessageList messages={messages} onRetry={handleRetry} onEditSend={sendEdit} activeChatId={activeChatId} />
+                {!loading && Object.keys(diffResults).length > 0 && (
+                  <div className="diff-results-panel">
+                    {Object.entries(diffResults).map(([path, d]) => (
+                      <DiffResultView key={path} diffResult={d} />
+                    ))}
+                  </div>
+                )}
                 {pendingApproval && (
                   <div className="approval-overlay">
                     <ApprovalCard msg={pendingApproval} onApprove={() => handleApproval(true)} onReject={() => handleApproval(false)} />
