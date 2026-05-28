@@ -959,7 +959,7 @@ def auto_title(message: str) -> str:
     title = " ".join(words)
     return title[:50] + ("…" if len(title) > 50 else "")
 
-MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
+MODELS = ["gemini-3.1-flash-lite"]
 
 
 def clean_text(text: str) -> str:
