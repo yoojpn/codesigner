@@ -689,6 +689,8 @@ async def dispatch_tool(name, args, session_dir, ws=None):
     if name == "write_file":
         return tool_write_file(path=args["path"], content=args["content"], session_dir=sd)
     if name == "apply_diff":
+        if "diff" not in args:
+            return {"error": "apply_diff called without 'diff' argument. You must provide the diff content."}
         return tool_apply_diff(path=args["path"], diff=args["diff"], session_dir=sd)
     if name == "delete_file":
         return tool_delete_file(path=args["path"], session_dir=sd)
