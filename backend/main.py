@@ -834,6 +834,27 @@ OTHER TOOLS
 - Be concise in summaries: list changed files and what changed.
 
 ═══════════════════════════════════════════════════════
+LOOP PREVENTION — CRITICAL
+═══════════════════════════════════════════════════════
+- If a tool returns no results or fails, do NOT call the exact same tool with the exact
+  same arguments again. Switch to a different approach immediately:
+  • search_in_file found nothing? → use read_file with a line range instead.
+  • apply_diff failed twice on the same file? → use write_file to rewrite the section.
+  • Pattern not found? → try a shorter/different search pattern, or read_file directly.
+- If you are stuck after 2 attempts at the same action, STOP and tell the user what
+  you tried and what you need. Never spin in an infinite loop.
+
+═══════════════════════════════════════════════════════
+COMMUNICATION — NO STALLING
+═══════════════════════════════════════════════════════
+- NEVER say "少々お待ちください", "準備しています", "確認します", "調べます",
+  "しばらくお待ちください", "Let me", "I'll", "I will", "I'm going to",
+  "I need to", "First, let me" before calling a tool.
+- Just call the tool silently. If you must explain, do so AFTER the tool results.
+- Do NOT narrate your plan before executing it. Execute first, summarize after.
+- One-sentence acknowledgment maximum before tool calls; zero is preferred.
+
+═══════════════════════════════════════════════════════
 TOOL vs TEXT — CRITICAL RULES, NO EXCEPTIONS
 ═══════════════════════════════════════════════════════
 ABSOLUTE RULE: NEVER output code, diffs, patches, or scripts in chat text.
@@ -861,6 +882,20 @@ def clean_text(text: str) -> str:
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     # AIがツール呼び出しをJSONテキストとして出力してしまった場合を除去
     text = re.sub(r'\{"tool"\s*:.*?\}\s*', "", text, flags=re.DOTALL)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    # stallingフレーズを除去（行単位）
+    _stall_patterns = [
+        r"^少々お待ちください.*$",
+        r"^しばらくお待ちください.*$",
+        r"^確認します.*$",
+        r"^調べます.*$",
+        r"^確認しています.*$",
+        r"^準備しています.*$",
+        r"^ファイルを確認.*必要な実装.*$",
+        r"^修正が必要.*現在.*確認.*$",
+    ]
+    for pat in _stall_patterns:
+        text = re.sub(pat, "", text, flags=re.MULTILINE)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -900,6 +935,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
     diff_fail_per_file: dict = {}  # ファイルごとの失敗カウント
     MAX_DIFF_RETRIES = 5  # 全体上限
     MAX_PER_FILE = 3       # 同一ファイルの上限
+    _recent_tool_calls: list = []  # ループ検出用（直近の tool:key 履歴）
 
     for _ in range(30):
         response = None
@@ -1023,6 +1059,25 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
         for fc in tool_calls:
             name, args = fc.name, dict(fc.args)
+
+            # ループ検出: 同一ツール+同一キー引数が直近3回連続したらAIに強制フィードバック
+            _call_key = f"{name}:{args.get('path','')}{args.get('pattern','')}{args.get('query','')}{args.get('command','')}"
+            _recent_tool_calls.append(_call_key)
+            if len(_recent_tool_calls) > 6:
+                _recent_tool_calls.pop(0)
+            if len(_recent_tool_calls) >= 3 and len(set(_recent_tool_calls[-3:])) == 1:
+                # 同じキーが3回連続 → 強制的に別アプローチを促す
+                loop_msg = (f"LOOP DETECTED: You called {name} with the same arguments 3 times in a row with no progress. "
+                           f"STOP. Do NOT call this tool again with these arguments. "
+                           f"Switch to a completely different approach: if search failed, use read_file with line ranges; "
+                           f"if apply_diff failed, use write_file to rewrite the file.")
+                tool_response_parts.append(types.Part(
+                    function_response=types.FunctionResponse(name=name, response={"error": loop_msg})
+                ))
+                await ws.send_json({"type": "tool_result", "tool": name, "result": {"error": "ループ検出: 同じ操作を繰り返しています。別の方法で試みます。"}})
+                _recent_tool_calls.clear()
+                continue
+
             save_message(chat_id, "tool", json.dumps({"tool": name, "args": to_json_safe(args)}), msg_type="tool_call")
             await ws.send_json({"type": "tool_call", "tool": name, "args": to_json_safe(args)})
 
