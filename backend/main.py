@@ -682,6 +682,17 @@ async def dispatch_tool(name, args, session_dir, ws=None):
             command=args.get("command", ""), cwd=args.get("cwd", "."),
             session_dir=sd, ws=ws
         )
+    # 必須引数チェック（欠落時はエラーを返してクラッシュを防ぐ）
+    _required = {
+        "read_file": ["path"], "write_file": ["path", "content"],
+        "apply_diff": ["path", "diff"], "delete_file": ["path"],
+        "search_files": ["query"], "search_in_file": ["path", "pattern"],
+        "copy_to_output": ["path"], "web_search": ["query"], "fetch_url": ["url"],
+    }
+    for req in _required.get(name, []):
+        if req not in args:
+            return {"error": f"{name} called without required argument '{req}'. Please retry with all required arguments."}
+
     if name == "list_files":
         return tool_list_files(path=args.get("path", "."), session_dir=sd)
     if name == "read_file":
@@ -689,8 +700,6 @@ async def dispatch_tool(name, args, session_dir, ws=None):
     if name == "write_file":
         return tool_write_file(path=args["path"], content=args["content"], session_dir=sd)
     if name == "apply_diff":
-        if "diff" not in args:
-            return {"error": "apply_diff called without 'diff' argument. You must provide the diff content."}
         return tool_apply_diff(path=args["path"], diff=args["diff"], session_dir=sd)
     if name == "delete_file":
         return tool_delete_file(path=args["path"], session_dir=sd)
