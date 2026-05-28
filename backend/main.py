@@ -810,15 +810,38 @@ ALTERNATIVE: SEARCH/REPLACE (for simple targeted edits without special chars):
   replacement lines
   >>>>>>> REPLACE
 
-FALLBACK: write_file — use when creating new files or when the whole file needs rewriting.
+FALLBACK: write_file — use ONLY for brand new files that do not exist yet.
+
+═══════════════════════════════════════════════════════
+LARGE FILE EDITING — MANDATORY WORKFLOW
+═══════════════════════════════════════════════════════
+For files > 500 lines (like cad.html, App.jsx, etc.), ALWAYS follow this workflow:
+  1. search_in_file to find the EXACT location of the section you need to change.
+  2. read_file with start_line/end_line around the match to get exact current content.
+  3. Build your patch using EXACTLY the lines returned by read_file.
+  4. Call apply_diff with a patch containing ALL needed changes (multiple @@ hunks).
+
+NEVER build a patch from memory or assumption. ALWAYS read first.
+
+═══════════════════════════════════════════════════════
+DIFF SIZE — DO THE FULL CHANGE IN ONE PASS
+═══════════════════════════════════════════════════════
+- A single feature (e.g. "add drawing sandbox") typically requires: new CSS, new HTML,
+  new JS event handlers, new JS functions — all in one apply_diff call.
+- DO NOT make 1-line patches. DO NOT stop after adding one button.
+- A complete implementation is the ONLY acceptable result.
+- If the change requires 200 lines added across 6 locations, do all 6 @@ hunks in one patch.
 
 ═══════════════════════════════════════════════════════
 DIFF FAILURE RECOVERY
 ═══════════════════════════════════════════════════════
-- If apply_diff returns an error with file_content_preview: read the preview, then
-  immediately call read_file to get the full current content, then retry with a
-  corrected patch that matches the actual file content exactly.
-- Never give up after one failure. Read the exact section → fix the patch → retry.
+- If apply_diff fails, the error response contains `patch_failure_context` with the
+  EXACT current content of the file around the failed location, with line numbers.
+- Read that context, fix ONLY the SEARCH block that failed (copy lines verbatim),
+  and retry immediately. Do NOT re-read the whole file.
+- If a SEARCH block fails twice: use search_in_file with a shorter unique pattern,
+  then read_file(start_line, end_line) to get exact lines, then retry.
+- Never give up after one failure.
 
 ═══════════════════════════════════════════════════════
 OTHER TOOLS
@@ -919,7 +942,7 @@ def auto_title(message: str) -> str:
     title = " ".join(words)
     return title[:50] + ("…" if len(title) > 50 else "")
 
-MODELS = ["gemini-3.1-flash-lite", "gemini-3.1-flash-lite-001"]
+MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite"]
 
 
 def clean_text(text: str) -> str:
@@ -1171,33 +1194,64 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
             # tool_resultをDBに保存
             save_message(chat_id, "tool", json.dumps({"tool": name, "result": result}), msg_type="tool_result")
 
-            # apply_diffのエラーはUIに出さず、AIへの内部フィードバックのみ
+            # apply_diffのエラーはUIには軽く出す（スピナーを止めるため）、AIへは詳細フィードバック
             if name == "apply_diff" and result.get("error") and result.get("error") != "already_applied":
-                # UIには送らない（AIのhistoryには積む）
-                # ファイルの現在の内容を自動でフィードバックに含める
-                file_path = args.get("path", "")
-                auto_content = ""
-                if file_path:
+                # UIにはエラーを送る（resultがundefinedのままだとスピナーが止まらない）
+                await ws.send_json({"type": "tool_result", "tool": name, "result": {"error": result.get("error", "patch failed"), "retrying": True}})
+                # 失敗箇所周辺の内容をAIにフィードバック（全文でなくHINT周辺50行のみ行番号付き）
+                _fpath = args.get("path", "")
+                _auto_ctx = ""
+                if _fpath:
                     try:
-                        src = session_dir / file_path
-                        if src.exists():
-                            content = src.read_text(errors="replace")
-                            auto_content = f"\n\nCurrent file content of {file_path}:\n```\n{content[:8000]}\n```\nPlease use this exact content to construct a correct patch."
+                        _src = session_dir / _fpath
+                        if _src.exists():
+                            _flines = _src.read_text(errors="replace").splitlines()
+                            _total = len(_flines)
+                            _hint_line = None
+                            _err_str = str(result.get("error", ""))
+                            import re as _re2
+                            _hm = _re2.search(r"line[s]?\s+(\d+)", _err_str, _re2.IGNORECASE)
+                            if _hm:
+                                _hint_line = int(_hm.group(1)) - 1
+                            if _hint_line is None:
+                                _diff_text = args.get("diff", "")
+                                _search_first = ""
+                                for _dl in _diff_text.splitlines():
+                                    if _dl.startswith("<<<<<<< SEARCH") or _dl.startswith("*** Begin") or _dl.startswith("@@"):
+                                        continue
+                                    if _dl.startswith("=======") or _dl.startswith(">>>>>>> REPLACE") or _dl.startswith("*** "):
+                                        break
+                                    _stripped = (_dl[1:] if _dl and _dl[0] in " -+" else _dl).strip()
+                                    if _stripped:
+                                        _search_first = _stripped
+                                        break
+                                if _search_first:
+                                    for _idx, _l in enumerate(_flines):
+                                        if _search_first[:40] in _l:
+                                            _hint_line = _idx
+                                            break
+                            _s = max(0, (_hint_line - 25) if _hint_line is not None else 0)
+                            _e2 = min(_total, (_hint_line + 25) if _hint_line is not None else 80)
+                            _snippet = "\n".join(f"{_i+1}: {_flines[_i]}" for _i in range(_s, _e2))
+                            _auto_ctx = (
+                                f"PATCH FAILED. Exact content of {_fpath} lines {_s+1}-{_e2} of {_total} (with line numbers):\n"
+                                f"```\n{_snippet}\n```\n"
+                                f"Your SEARCH block must match these lines EXACTLY character-for-character. "
+                                f"Copy lines verbatim. Use search_in_file to find the exact location first."
+                            )
                     except Exception:
                         pass
-                # tool_response_partsにエラー+内容を積む（AIへのフィードバック）
-                enriched = sanitize_result(result, max_len=100000)
-                if auto_content and isinstance(enriched, dict):
-                    enriched = dict(enriched)
-                    enriched["current_file_content"] = auto_content
+                _enriched = sanitize_result(result, max_len=100000)
+                if _auto_ctx and isinstance(_enriched, dict):
+                    _enriched = dict(_enriched)
+                    _enriched["patch_failure_context"] = _auto_ctx
                 tool_response_parts.append(types.Part(
-                    function_response=types.FunctionResponse(name=name, response=enriched)
+                    function_response=types.FunctionResponse(name=name, response=_enriched)
                 ))
-                # 失敗カウントを更新
                 diff_fail_count += 1
-                diff_fail_per_file[file_path] = diff_fail_per_file.get(file_path, 0) + 1
+                diff_fail_per_file[_fpath] = diff_fail_per_file.get(_fpath, 0) + 1
                 has_diff_error = True
-                continue  # 通常のtool_response_parts追加をスキップ
+                continue
             else:
                 await ws.send_json({"type": "tool_result", "tool": name, "result": result})
             max_len = 500000 if name == "read_file" else 100000

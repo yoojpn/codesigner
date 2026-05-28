@@ -405,7 +405,7 @@ function DiffResultView({ diffResult }) {
 function ToolGroup({ group }) {
   const [expanded, setExpanded] = useState(false)
   const items = group.items || []
-  const isDone = items.every(t => t.result !== undefined)
+  const isDone = items.every(t => t.result !== undefined || t.skipped)
   const hasError = items.some(t => t.result?.error && t.result?.error !== 'already_applied')
   const label = toolGroupLabel(items)
   const icon = toolGroupIcon(items)
@@ -1049,6 +1049,14 @@ export default function App() {
     on('done', () => {
       setAgentStatus(null)
       setLoading(false)
+      // 全tool_groupのresultがundefinedのitemsを強制完了にする（スピナー止める）
+      setMessages(prev => prev.map(msg => {
+        if (msg.type !== 'tool_group') return msg
+        const items = msg.items.map(t =>
+          t.result === undefined ? { ...t, result: { skipped: true } } : t
+        )
+        return { ...msg, items }
+      }))
       refreshFiles()
       refreshOutputs()
       setPendingOutputFiles(prev => {
