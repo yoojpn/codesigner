@@ -633,7 +633,7 @@ function MessageList({ messages, onRetry, onEditSend, activeChatId, diffResults 
   const [editValue, setEditValue] = useState('')
   const [copiedIdx, setCopiedIdx] = useState(null)
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, diffResults])
 
   function copyText(text, idx) {
     navigator.clipboard.writeText(text).then(() => {
