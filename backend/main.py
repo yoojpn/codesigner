@@ -1230,8 +1230,8 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
             result = await dispatch_tool(name, args, session_dir, ws=ws)
 
-            # run_commandでcpされた場合、コピー先ファイルのスナップショットをリセット（累積diff基点を更新）
-            if name == "run_command" and result.get("returncode") == 0:
+            # run_commandでcpされた場合、コピー先ファイルのスナップショットをcpされた内容で設定（累積diff基点）
+            if name == "run_command" and result.get("exit_code", 1) == 0:
                 cmd = args.get("command", "")
                 import shlex
                 if cmd.strip().startswith("cp "):
@@ -1242,20 +1242,26 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                             dest_key = str(session_dir / dest)
                             dest_path = session_dir / dest
                             if dest_path.exists():
+                                # cp直後の内容 = input側の内容。これを基点にすれば「inputからの変更」が累積diffになる
                                 _file_snapshots[dest_key] = dest_path.read_text(errors="replace")
-                                logger.info(f"[Snapshot] reset snapshot for {dest} after cp")
-                    except Exception:
-                        pass
+                                logger.info(f"[Snapshot] set snapshot for {dest} after cp (base for cumulative diff)")
+                    except Exception as e:
+                        logger.warning(f"[Snapshot] cp detect failed: {e}")
 
             # apply_diff / write_file 成功時: 初回スナップショットとの累積diffを送信
             if name in ("apply_diff", "write_file") and result.get("success"):
                 import difflib
                 _snap_path2 = session_dir / args.get("path", "")
                 _fkey2 = str(_snap_path2)
+                logger.info(f"[Diff] path={args.get('path','')} fkey={_fkey2} exists={_snap_path2.exists()} snapshot_keys={list(_file_snapshots.keys())}")
                 if _snap_path2.exists():
                     _after = _snap_path2.read_text(errors="replace")
-                    # 初回スナップショットがあればそこからの累積diff、なければ空からのdiff
-                    _origin = _file_snapshots.get(_fkey2, "")
+                    _origin = _file_snapshots.get(_fkey2, None)
+                    if _origin is None:
+                        # スナップショット未設定: apply_diff前に保存したはずだが念のためapply_diff前のスナップショットを使う
+                        _origin = _snapshot_before or ""
+                        _file_snapshots[_fkey2] = _origin
+                        logger.warning(f"[Diff] no snapshot for {_fkey2}, using snapshot_before (len={len(_origin)})")
                     _before_lines = _origin.splitlines(keepends=True)
                     _after_lines = _after.splitlines(keepends=True)
                     _udiff = list(difflib.unified_diff(
@@ -1266,15 +1272,15 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     ))
                     added = sum(1 for l in _udiff if l.startswith('+') and not l.startswith('+++'))
                     removed = sum(1 for l in _udiff if l.startswith('-') and not l.startswith('---'))
-                    logger.info(f"[Diff] {args.get('path','')} +{added} -{removed} udiff_lines={len(_udiff)}")
-                    # 変化がなくてもカードは送る（0表示で問題があれば原因を把握するため）
-                    await ws.send_json({
-                        "type": "diff_result",
-                        "path": args.get("path", ""),
-                        "added": added,
-                        "removed": removed,
-                        "diff": "".join(_udiff)
-                    })
+                    logger.info(f"[Diff] +{added} -{removed} origin_len={len(_origin)} after_len={len(_after)} udiff_lines={len(_udiff)}")
+                    if added > 0 or removed > 0:
+                        await ws.send_json({
+                            "type": "diff_result",
+                            "path": args.get("path", ""),
+                            "added": added,
+                            "removed": removed,
+                            "diff": "".join(_udiff)
+                        })
 
             # write_file / apply_diff 成功時: output/ へ自動コピー
             if result.get("success") and name in ("write_file", "apply_diff"):
