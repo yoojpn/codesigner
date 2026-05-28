@@ -1117,8 +1117,16 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
         if not tool_calls:
             if candidate_content:
                 messages.append(candidate_content)
-            if text:
-                save_message(chat_id, "assistant", text)
+            # 空レスポンス（テキストもツールもなし）の場合は継続を促す
+            if not text:
+                logger.warning("[Inject] empty response (no text, no tools) — injecting continue")
+                messages.append(types.Content(role="user", parts=[types.Part(text=(
+                    "[SYSTEM] You returned an empty response. The task is NOT done. "
+                    "You MUST call the next tool immediately to continue the task. "
+                    "Do NOT stop until all changes are complete and you send a final summary."
+                ))]))
+                continue
+            save_message(chat_id, "assistant", text)
             break
 
         if candidate_content:
