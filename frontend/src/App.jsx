@@ -627,7 +627,7 @@ function EditorArea({ selectedFile, fileContent, lang }) {
 }
 
 // ---- Message Renderer ----
-function MessageList({ messages, onRetry, onEditSend, activeChatId }) {
+function MessageList({ messages, onRetry, onEditSend, activeChatId, diffResults = {} }) {
   const bottomRef = useRef(null)
   const [editingIdx, setEditingIdx] = useState(null)
   const [editValue, setEditValue] = useState('')
@@ -788,6 +788,13 @@ function MessageList({ messages, onRetry, onEditSend, activeChatId }) {
         )
         return null
       })}
+      {Object.keys(diffResults).length > 0 && (
+        <div className="diff-results-panel">
+          {Object.entries(diffResults).map(([path, d]) => (
+            <DiffResultView key={path} diffResult={d} />
+          ))}
+        </div>
+      )}
       <div ref={bottomRef} />
     </div>
   )
@@ -1305,14 +1312,7 @@ export default function App() {
                   onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
                   style={{display:'contents'}}
                 >
-                <MessageList messages={messages} onRetry={handleRetry} onEditSend={sendEdit} activeChatId={activeChatId} />
-                {Object.keys(diffResults).length > 0 && (
-                  <div className="diff-results-panel">
-                    {Object.entries(diffResults).map(([path, d]) => (
-                      <DiffResultView key={path} diffResult={d} />
-                    ))}
-                  </div>
-                )}
+                <MessageList messages={messages} onRetry={handleRetry} onEditSend={sendEdit} activeChatId={activeChatId} diffResults={diffResults} />
                 {pendingApproval && (
                   <div className="approval-overlay">
                     <ApprovalCard msg={pendingApproval} onApprove={() => handleApproval(true)} onReject={() => handleApproval(false)} />

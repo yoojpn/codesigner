@@ -841,6 +841,23 @@ ALTERNATIVE: SEARCH/REPLACE (for simple targeted edits without special chars):
 FALLBACK: write_file — use ONLY for brand new files that do not exist yet.
 
 ═══════════════════════════════════════════════════════
+BEFORE IMPLEMENTING ANY FEATURE — MANDATORY CHECK
+═══════════════════════════════════════════════════════
+Before adding ANY new feature, function, button, modal, or CSS:
+  1. search_in_file with the feature name / function name / ID to check if it already exists.
+  2. If it exists: EDIT the existing code. Do NOT add a second copy.
+  3. If it does not exist: implement it fresh.
+
+NEVER add a second copy of something that already exists.
+Examples:
+  - Adding a button "openSandbox"? → search_in_file for "openSandbox" first.
+  - Adding a modal "sandbox-modal"? → search_in_file for "sandbox-modal" first.
+  - Adding CSS for ".sandbox"? → search_in_file for ".sandbox" first.
+  - Adding a function "initSandbox"? → search_in_file for "initSandbox" first.
+
+If the search finds it: read that section, then PATCH it. Never duplicate.
+
+═══════════════════════════════════════════════════════
 LARGE FILE EDITING — MANDATORY WORKFLOW
 ═══════════════════════════════════════════════════════
 For files > 500 lines (like cad.html, App.jsx, etc.), ALWAYS follow this workflow:
