@@ -368,34 +368,57 @@ function toolGroupIcon(items) {
 function DiffResultView({ diffResult }) {
   const [expanded, setExpanded] = useState(false)
   if (!diffResult) return null
-  const { path, added, removed, diff } = diffResult
+  const { path, added = 0, removed = 0, diff = '' } = diffResult
   const filename = path?.split('/').pop() || path
-  const lines = (diff || '').split('\n')
+
+  // diff テキストをパース（hunks単位）
+  const hunks = []
+  let currentHunk = null
+  for (const raw of diff.split('\n')) {
+    if (raw.startsWith('--- ') || raw.startsWith('+++ ')) continue
+    if (raw.startsWith('@@')) {
+      if (currentHunk) hunks.push(currentHunk)
+      currentHunk = { header: raw, lines: [] }
+    } else if (currentHunk) {
+      if (raw.startsWith('+')) currentHunk.lines.push({ type: 'add', text: raw.slice(1) })
+      else if (raw.startsWith('-')) currentHunk.lines.push({ type: 'del', text: raw.slice(1) })
+      else if (raw !== '\\ No newline at end of file') currentHunk.lines.push({ type: 'ctx', text: raw.slice(1) })
+    }
+  }
+  if (currentHunk) hunks.push(currentHunk)
+
+  const totalChanges = added + removed
+  const addPct = totalChanges > 0 ? Math.round((added / totalChanges) * 5) : 0
 
   return (
-    <div className="diff-result-card">
-      <button className="diff-result-header" onClick={() => setExpanded(v => !v)}>
-        <span className="diff-result-check"><Check size={11} /></span>
-        <span className="diff-result-filename">{filename}</span>
-        <span className="diff-stat-add">+{added}</span>
-        <span className="diff-stat-del"> −{removed}</span>
-        <span className="diff-stat-bar">
-          {(() => {
-            const total = (added + removed) || 1
-            const addSegs = Math.round((added / total) * 8)
-            return Array.from({ length: 8 }).map((_, si) => (
-              <span key={si} className={`diff-stat-seg ${si < addSegs ? 'add' : 'del'}`} />
-            ))
-          })()}
+    <div className="diff-card">
+      <button className="diff-card-header" onClick={() => setExpanded(v => !v)}>
+        <span className="diff-card-icon"><Check size={12} /></span>
+        <span className="diff-card-filename">{filename}</span>
+        <span className="diff-card-path">{path}</span>
+        <span className="diff-card-add">+{added}</span>
+        <span className="diff-card-del">−{removed}</span>
+        <span className="diff-card-segments">
+          {Array.from({length: 5}).map((_, i) => (
+            <span key={i} className={`diff-seg ${i < addPct ? 'add' : removed > 0 ? 'del' : 'neutral'}`} />
+          ))}
         </span>
-        <span className="diff-toggle-chevron">{expanded ? '▲' : '▼'}</span>
+        <span className="diff-card-chevron">{expanded ? '▲' : '▼'}</span>
       </button>
       {expanded && (
-        <div className="diff-content">
-          {lines.filter(l => !l.startsWith('---') && !l.startsWith('+++') && l.trim()).map((line, i) => {
-            const cls = line.startsWith('+') ? 'diff-add' : line.startsWith('-') ? 'diff-del' : line.startsWith('@@') ? 'diff-hunk' : 'diff-ctx'
-            return <div key={i} className={`diff-line ${cls}`}><span className="diff-line-text">{line}</span></div>
-          })}
+        <div className="diff-body">
+          {hunks.length === 0 && <div className="diff-empty">変更なし</div>}
+          {hunks.map((hunk, hi) => (
+            <div key={hi} className="diff-hunk-block">
+              <div className="diff-hunk-header">{hunk.header}</div>
+              {hunk.lines.map((line, li) => (
+                <div key={li} className={`diff-row diff-row-${line.type}`}>
+                  <span className="diff-gutter">{line.type === 'add' ? '+' : line.type === 'del' ? '−' : ' '}</span>
+                  <span className="diff-code">{line.text}</span>
+                </div>
+              ))}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -1021,14 +1044,18 @@ export default function App() {
         return updated
       })
       // messages にも差し込む（同パスは上書き、なければ末尾に追加）
+      const diffEntry = { type: 'file_diff', ...msg }
       setMessages(prev => {
-        const idx = prev.findLastIndex(m => m.type === 'file_diff' && m.path === msg.path)
-        if (idx !== -1) {
+        let lastIdx = -1
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i].type === 'file_diff' && prev[i].path === msg.path) { lastIdx = i; break }
+        }
+        if (lastIdx !== -1) {
           const next = [...prev]
-          next[idx] = { type: 'file_diff', ...msg }
+          next[lastIdx] = diffEntry
           return next
         }
-        return [...prev, { type: 'file_diff', ...msg }]
+        return [...prev, diffEntry]
       })
     })
     on('approval_request', (msg) => {
