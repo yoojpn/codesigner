@@ -364,18 +364,43 @@ def tool_apply_diff(path, diff, *, session_dir):
                                     for l in hunk_body if l and l[0] != '+']
                     # アンカーテキストがある場合はそこを起点に探す
                     hint = None
+                    anchor_found = False
                     if anchor_text:
+                        anchor_stripped = anchor_text.strip()
                         for li, fl in enumerate(result_lines):
-                            if anchor_text.strip() and anchor_text.strip() in fl:
-                                hint = li  # result_linesはすでにoffset反映済み
+                            if anchor_stripped and anchor_stripped in fl:
+                                hint = li
+                                anchor_found = True
                                 break
+                        # アンカーが見つからない場合: 先頭のcontext/search行で補完検索
+                        if not anchor_found and search_lines:
+                            first_search = search_lines[0].strip()
+                            if first_search:
+                                for li, fl in enumerate(result_lines):
+                                    if first_search in fl:
+                                        hint = li
+                                        break
                     best_pos = _find_block(result_lines, search_lines, hint=hint)
                     if best_pos is None:
-                        err_msg = f"V4A hunk '{anchor_text[:60]}': match failed" + _make_hint(search_lines, result_lines)
+                        # アンカーが見つからなかった場合は専用エラーメッセージ
+                        if anchor_text and not anchor_found:
+                            anchor_hint = ""
+                            # 近い行を探してヒント提示
+                            ak = anchor_text.strip()[:40]
+                            for li, fl in enumerate(result_lines):
+                                if ak[:20] in fl:
+                                    anchor_hint = f"\nNOTE: anchor line not found in file. Similar line at {li+1}: {fl.strip()[:100]!r}"
+                                    break
+                            if not anchor_hint:
+                                anchor_hint = f"\nNOTE: anchor '{anchor_text.strip()[:60]}' does not exist in the file yet. Use an EXISTING adjacent line as anchor, not the line being inserted."
+                            err_msg = f"V4A hunk '{anchor_text[:60]}': anchor not found.{anchor_hint}" + _make_hint(search_lines, result_lines)
+                        else:
+                            err_msg = f"V4A hunk '{anchor_text[:60]}': match failed" + _make_hint(search_lines, result_lines)
                         hunk_errors.append(err_msg)
                         # 失敗時は即座にエラー返却（後続hunkが行ずれで連鎖失敗するのを防ぐ）
                         marker.unlink(missing_ok=True)
-                        return {"error": "V4A patch failed:\n" + "\n".join(hunk_errors)}
+                        return {"error": "V4A patch failed:\n" + "\n".join(hunk_errors),
+                                "hint": "IMPORTANT: The @@ anchor must be an EXISTING line already in the file (the line BEFORE or AFTER the insertion point). Do NOT use a line you are adding as the anchor. Use read_file to see exact current content, then retry with a correct anchor."}
                     j = best_pos
                     for hl in hunk_body:
                         if not hl:
@@ -1250,11 +1275,23 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                 if _auto_ctx and isinstance(_enriched, dict):
                     _enriched = dict(_enriched)
                     _enriched["patch_failure_context"] = _auto_ctx
+                diff_fail_count += 1
+                _fpath_fail_count = diff_fail_per_file.get(_fpath, 0) + 1
+                diff_fail_per_file[_fpath] = _fpath_fail_count
+                # 同一ファイルへの失敗が2回以上: SEARCH/REPLACE方式への切替を強制
+                if _fpath_fail_count >= 2 and isinstance(_enriched, dict):
+                    _enriched = dict(_enriched)
+                    _enriched["FORCE_SWITCH"] = (
+                        f"apply_diff has failed {_fpath_fail_count} times on '{_fpath}'. "
+                        f"STOP using V4A/unified diff format. "
+                        f"Switch to SEARCH/REPLACE format immediately:\n"
+                        f"<<<<<<< SEARCH\n(exact lines to replace, copied verbatim from read_file)\n=======\n(new lines)\n>>>>>>> REPLACE\n"
+                        f"First call read_file(path='{_fpath}', start_line=N, end_line=M) to get EXACT content around the target location, "
+                        f"then use those exact characters in your SEARCH block. No guessing."
+                    )
                 tool_response_parts.append(types.Part(
                     function_response=types.FunctionResponse(name=name, response=_enriched)
                 ))
-                diff_fail_count += 1
-                diff_fail_per_file[_fpath] = diff_fail_per_file.get(_fpath, 0) + 1
                 has_diff_error = True
                 continue
             else:
@@ -1320,13 +1357,19 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     _keep.append(_m)
             messages = list(reversed(_keep))
 
-        # diff失敗が多すぎる場合は終了
+        # diff失敗が多すぎる場合はwrite_fileへの切替を強制
         if diff_fail_count >= MAX_DIFF_RETRIES:
-            msg = "複数のdiff適用に繰り返し失敗しました。対象ファイルを確認し、write_fileで全体を書き直すアプローチを検討してください。"
-            save_message(chat_id, "assistant", msg)
-            await ws.send_json({"type": "stream", "content": msg})
-            await ws.send_json({"type": "stream_end"})
-            break
+            # AIに最終手段としてwrite_fileを使わせる
+            _force_msg = (
+                f"[SYSTEM] apply_diff has failed {diff_fail_count} times. "
+                f"LAST RESORT: use write_file to rewrite the affected file(s) completely. "
+                f"Steps: 1) read_file the current content, 2) modify it in memory with all required changes, "
+                f"3) write_file with the complete new content. Do NOT give up — complete the task."
+            )
+            messages.append(types.Content(role="user", parts=[types.Part(text=_force_msg)]))
+            diff_fail_count = 0  # リセットして続行
+            has_diff_error = False
+            continue
 
         # diff失敗の場合はAIに再試行させる（ループ継続、テキストは破棄）
         if has_diff_error:
