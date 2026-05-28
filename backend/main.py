@@ -1278,7 +1278,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     if not (_dl.startswith("+") and not _dl.startswith("+++")):
                         continue
                     # id="xxx", function xxx, class xxx, def xxx などを抽出
-                    for _pat in [r'id=["\']([\w-]+)["\']', r'function\s+(\w+)\s*\\(', r'def\s+(\w+)\s*\\(', r'class[=\s]["\']([\w-]+)["\']']:
+                    for _pat in [r'id=["\']([\w-]+)["\']', r'function\s+(\w+)\s*\(', r'def\s+(\w+)\s*\(', r'class[=\s]["\']([\w-]+)["\']']:
                         for _m in _re3.findall(_pat, _dl):
                             if len(_m) > 4:
                                 _added_ids.add(_m)
