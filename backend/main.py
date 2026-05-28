@@ -414,14 +414,10 @@ def tool_apply_diff(path, diff, *, session_dir):
                                 offset -= 1
                                 lines_removed += 1
                         elif prefix == '+':
-                            # 重複挿入防止: すでに同じ行が同じ位置にある場合はスキップ
-                            if j < len(result_lines) and result_lines[j].rstrip('\n\r') == content.rstrip('\n\r'):
-                                j += 1  # すでに存在するのでスキップ
-                            else:
-                                result_lines.insert(j, content)
-                                j += 1
-                                offset += 1
-                                lines_added += 1
+                            result_lines.insert(j, content)
+                            j += 1
+                            offset += 1
+                            lines_added += 1
                         else:  # context
                             j += 1
                 else:
@@ -434,6 +430,12 @@ def tool_apply_diff(path, diff, *, session_dir):
             result_text = "\n".join(result_lines)
             if original.endswith("\n"):
                 result_text += "\n"
+            # 変更が0行でファイルも同じ場合は「実際には何も変わっていない」とLLMに伝える
+            if lines_added == 0 and lines_removed == 0 and result_text == original:
+                marker.unlink(missing_ok=True)
+                return {"error": "V4A patch applied but made NO changes to the file. "
+                        "Your diff may have context lines only, or the +/- lines did not match any content. "
+                        "Use read_file to verify current content, then retry with correct SEARCH content."}
             t.write_text(result_text)
             res = {"success": True, "path": path, "lines": len(result_lines),
                    "lines_changed": lines_added, "lines_removed": lines_removed, "format": "v4a"}
