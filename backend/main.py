@@ -818,9 +818,7 @@ DIFF FAILURE RECOVERY
 - If apply_diff returns an error with file_content_preview: read the preview, then
   immediately call read_file to get the full current content, then retry with a
   corrected patch that matches the actual file content exactly.
-- Never give up after one failure. Read → fix → retry.
-- If a file contains lots of ${...} or backtick template literals, switch to write_file
-  for that file (rewrite the whole thing) rather than patching.
+- Never give up after one failure. Read the exact section → fix the patch → retry.
 
 ═══════════════════════════════════════════════════════
 OTHER TOOLS
@@ -866,6 +864,52 @@ ABSOLUTE RULE: NEVER output code, diffs, patches, or scripts in chat text.
 
 USE TOOLS when the user wants any file change or command execution.
 USE TEXT ONLY when the user asks a question or wants explanation — no file changes needed.
+
+═══════════════════════════════════════════════════════
+AGENT CONTINUATION — NEVER STOP MID-TASK
+═══════════════════════════════════════════════════════
+- After every tool call, keep going until the ENTIRE task is done.
+- NEVER stop after just reading a file. Reading is preparation — editing is the goal.
+- NEVER stop after just one apply_diff when more changes are needed.
+- NEVER output "I'll now..." or "Next I will..." and then stop — DO IT.
+- If you search and find what you need, immediately call apply_diff or write_file next.
+- Only stop and send a final text message when ALL requested changes are complete.
+- If you're unsure what to do next, write a brief text then keep using tools.
+- A task is done only when every file has been edited and the user has received a summary.
+
+═══════════════════════════════════════════════════════
+LARGE CHANGE STRATEGY — MULTIPLE HUNKS IN ONE PATCH
+═══════════════════════════════════════════════════════
+- For large changes (new feature, multiple locations, 50+ lines added), use apply_diff
+  with MULTIPLE hunks in a single patch — do NOT call apply_diff once per location.
+- One V4A patch can contain many @@ sections targeting different parts of the file.
+- Example structure for a patch adding a new feature across 4 locations:
+    *** Begin Patch
+    *** Update File: cad.html
+    @@ CSS section anchor
+     context
+    +new CSS rule
+    @@ HTML toolbar anchor
+     context
+    +new button
+    @@ setTool function anchor
+     context
+    +new case
+    @@ end of file anchor
+     context
+    +new function block
+    *** End Patch
+- NEVER use write_file for existing files. apply_diff is always the right tool.
+  write_file is ONLY for creating brand new files that don't exist yet.
+- If a patch fails, read the specific section and fix only that hunk, then retry.
+
+═══════════════════════════════════════════════════════
+ALWAYS SEND A FINAL SUMMARY MESSAGE
+═══════════════════════════════════════════════════════
+- After completing all tool calls, you MUST send a text message to the user.
+- The summary should be 1-3 sentences: what was done, what files were changed.
+- NEVER finish a task with only tool calls and no explanation.
+- Even for simple tasks, always send: "〇〇を修正しました。[ファイル名]を更新しました。"
 """
     return prompt
 
@@ -1044,7 +1088,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                 loop_msg = (f"LOOP DETECTED: You called {name} with the same arguments 3 times in a row with no progress. "
                            f"STOP. Do NOT call this tool again with these arguments. "
                            f"Switch to a completely different approach: if search failed, use read_file with line ranges; "
-                           f"if apply_diff failed, use write_file to rewrite the file.")
+                           f"if apply_diff failed, read the exact current content with read_file(start_line/end_line) then retry with corrected patch.")
                 tool_response_parts.append(types.Part(
                     function_response=types.FunctionResponse(name=name, response={"error": loop_msg})
                 ))
@@ -1180,11 +1224,17 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
         # diff失敗の場合はAIに再試行させる（ループ継続、テキストは破棄）
         if has_diff_error:
-            # ストリームで既に出ていたテキストはそのまま表示、ループ継続
             continue
 
+        # Gemini Flash 途中停止対策:
+        # ツール呼び出しのみ（テキストなし）で止まった場合、「続けて」インジェクション
+        # これはGemini Flashが1ターンで止まる既知のバグへの対処
+        if tool_calls and not text:
+            messages.append(types.Content(
+                role="user",
+                parts=[types.Part(text="[SYSTEM] Continue with the remaining tasks. Do not stop until the entire task is complete. If you have made all changes, send a summary message to the user.")]
+            ))
         # ツール呼び出しがあった場合は継続（AIはまだ作業中）
-        # → ループを続けてAIに次の行動をさせる
 
     await ws.send_json({"type": "done"})
     return messages
