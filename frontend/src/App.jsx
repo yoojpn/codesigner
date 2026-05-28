@@ -811,6 +811,13 @@ function MessageList({ messages, onRetry, onEditSend, activeChatId, diffResults 
         )
         return null
       })}
+      {Object.keys(diffResults).length > 0 && (
+        <div className="diff-panel">
+          {Object.entries(diffResults).map(([path, d]) => (
+            <DiffResultView key={path} diffResult={d} />
+          ))}
+        </div>
+      )}
       <div ref={bottomRef} />
     </div>
   )
@@ -1038,18 +1045,7 @@ export default function App() {
       })
     })
     on('diff_result', (msg) => {
-      console.log('[diff_result] inserting:', msg.path, '+'+msg.added, '-'+msg.removed)
-      const diffEntry = { type: 'file_diff', path: msg.path, added: msg.added, removed: msg.removed, diff: msg.diff }
-      setMessagesRef.current(prev => {
-        let lastIdx = -1
-        for (let i = prev.length - 1; i >= 0; i--) {
-          if (prev[i].type === 'file_diff' && prev[i].path === msg.path) { lastIdx = i; break }
-        }
-        if (lastIdx !== -1) {
-          const next = [...prev]; next[lastIdx] = diffEntry; return next
-        }
-        return [...prev, diffEntry]
-      })
+      setDiffResults(prev => ({ ...prev, [msg.path]: { path: msg.path, added: msg.added, removed: msg.removed, diff: msg.diff } }))
     })
     on('approval_request', (msg) => {
       setMessages(prev => [...prev.filter(m => m.type !== 'thinking')])
@@ -1151,8 +1147,7 @@ export default function App() {
     try { sessionStorage.removeItem('diffResults_' + activeChatId) } catch {}
     setMessages(prev => {
       const userCount = prev.filter(m => m.type === 'user').length
-      const filtered = prev.filter(m => m.type !== 'file_diff')  // 前回のdiffカードを消す
-      return [...filtered, { type: 'user', content: text, dbIndex: userCount }, { type: 'thinking' }]
+      return [...prev.filter(m => m.type !== 'file_diff'), { type: 'user', content: text, dbIndex: userCount }, { type: 'thinking' }]
     })
     setInput('')
     setAttachments([])
