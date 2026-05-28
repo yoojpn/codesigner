@@ -793,6 +793,8 @@ FILE EDITING — RULES
   3. Apply apply_diff targeting only those lines. Do NOT try to read the whole file at once.
 - NEVER output file contents or diffs in chat. Use tools exclusively.
 - NEVER output tool calls as JSON text — always use the function calling mechanism.
+- NEVER output a *** Begin Patch / *** End Patch block as chat text. That is a tool argument, not a response.
+  If you find yourself typing "*** Begin Patch" in your reply text: STOP. Call apply_diff instead.
 - When editing multiple files: call apply_diff/write_file for EVERY file before writing
   your summary. Do not stop after one file.
 - After apply_diff or write_file succeeds, do NOT read_file to verify — trust the result.
@@ -1140,6 +1142,17 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     "[SYSTEM] You returned an empty response. The task is NOT done. "
                     "You MUST call the next tool immediately to continue the task. "
                     "Do NOT stop until all changes are complete and you send a final summary."
+                ))]))
+                continue
+            # patchをテキストとして出力してしまった場合を検出してapply_diffを促す
+            if "*** Begin Patch" in text or "*** Update File" in text:
+                logger.warning("[Inject] patch output as text detected — redirecting to apply_diff")
+                await ws.send_json({"type": "stream", "content": "⚠️ パッチをテキスト出力しました。apply_diffツールで適用します..."})
+                messages.append(types.Content(role="user", parts=[types.Part(text=(
+                    "[SYSTEM] CRITICAL ERROR: You output a *** Begin Patch block as plain text. "
+                    "That does NOT modify any file. The patch was NOT applied. "
+                    "You MUST immediately call apply_diff with that patch content as the 'diff' argument. "
+                    "Do it NOW — call the tool, do not output text again."
                 ))]))
                 continue
             save_message(chat_id, "assistant", text)
