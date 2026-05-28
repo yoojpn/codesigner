@@ -1012,12 +1012,19 @@ export default function App() {
       })
     })
     on('diff_result', (msg) => {
-      // ファイルごとに1枚のfile_diffエントリを管理。既存があれば上書き、なければ追加
       setMessages(prev => {
+        // 既存のfile_diffがあれば上書き
         const idx = prev.findIndex(m => m.type === 'file_diff' && m.path === msg.path)
         if (idx !== -1) {
           const updated = [...prev]
           updated[idx] = { type: 'file_diff', ...msg }
+          return updated
+        }
+        // 最後のtool_groupの直後に挿入
+        const lastGroupIdx = prev.reduce((acc, m, i) => m.type === 'tool_group' ? i : acc, -1)
+        if (lastGroupIdx !== -1) {
+          const updated = [...prev]
+          updated.splice(lastGroupIdx + 1, 0, { type: 'file_diff', ...msg })
           return updated
         }
         return [...prev, { type: 'file_diff', ...msg }]

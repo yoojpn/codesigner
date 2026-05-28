@@ -389,10 +389,14 @@ def tool_apply_diff(path, diff, *, session_dir):
                                 offset -= 1
                                 lines_removed += 1
                         elif prefix == '+':
-                            result_lines.insert(j, content)
-                            j += 1
-                            offset += 1
-                            lines_added += 1
+                            # 重複挿入防止: すでに同じ行が同じ位置にある場合はスキップ
+                            if j < len(result_lines) and result_lines[j].rstrip('\n\r') == content.rstrip('\n\r'):
+                                j += 1  # すでに存在するのでスキップ
+                            else:
+                                result_lines.insert(j, content)
+                                j += 1
+                                offset += 1
+                                lines_added += 1
                         else:  # context
                             j += 1
                 else:
@@ -1226,6 +1230,23 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
             result = await dispatch_tool(name, args, session_dir, ws=ws)
 
+            # run_commandでcpされた場合、コピー先ファイルのスナップショットをリセット（累積diff基点を更新）
+            if name == "run_command" and result.get("returncode") == 0:
+                cmd = args.get("command", "")
+                import shlex
+                if cmd.strip().startswith("cp "):
+                    try:
+                        parts = shlex.split(cmd)
+                        if len(parts) >= 3:
+                            dest = parts[-1]
+                            dest_key = str(session_dir / dest)
+                            dest_path = session_dir / dest
+                            if dest_path.exists():
+                                _file_snapshots[dest_key] = dest_path.read_text(errors="replace")
+                                logger.info(f"[Snapshot] reset snapshot for {dest} after cp")
+                    except Exception:
+                        pass
+
             # apply_diff / write_file 成功時: 初回スナップショットとの累積diffを送信
             if name in ("apply_diff", "write_file") and result.get("success"):
                 import difflib
@@ -1245,6 +1266,8 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     ))
                     added = sum(1 for l in _udiff if l.startswith('+') and not l.startswith('+++'))
                     removed = sum(1 for l in _udiff if l.startswith('-') and not l.startswith('---'))
+                    logger.info(f"[Diff] {args.get('path','')} +{added} -{removed} udiff_lines={len(_udiff)}")
+                    # 変化がなくてもカードは送る（0表示で問題があれば原因を把握するため）
                     await ws.send_json({
                         "type": "diff_result",
                         "path": args.get("path", ""),
