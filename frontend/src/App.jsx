@@ -717,7 +717,7 @@ function MessageList({ messages, onRetry, onEditSend, activeChatId }) {
           </div>
         )
         if (msg.type === 'tool_group') return <ToolGroup key={i} group={msg} />
-        if (msg.type === 'file_diff') return <DiffResultView key={msg.path} diffResult={msg} />
+        if (msg.type === 'file_diff') return <DiffResultView key={'diff_' + msg.path + '_' + i} diffResult={msg} />
         if (msg.type === 'tool_call') return <ToolCallBadge key={i} tool={msg.tool} args={msg.args} />
         if (msg.type === 'tool_result') return <ToolResultView key={i} tool={msg.tool} result={msg.result} />
         if (msg.type === 'diff_summary') return (
@@ -1012,7 +1012,9 @@ export default function App() {
       })
     })
     on('diff_result', (msg) => {
+      console.log('[diff_result] received:', msg)
       setMessages(prev => {
+        console.log('[diff_result] prev messages count:', prev.length)
         // 既存のfile_diffがあれば上書き
         const idx = prev.findIndex(m => m.type === 'file_diff' && m.path === msg.path)
         if (idx !== -1) {
