@@ -1325,7 +1325,9 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     added = sum(1 for l in _udiff if l.startswith('+') and not l.startswith('+++'))
                     removed = sum(1 for l in _udiff if l.startswith('-') and not l.startswith('---'))
                     logger.info(f"[Diff] +{added} -{removed} origin_len={len(_origin)} after_len={len(_after)} udiff_lines={len(_udiff)}")
-                    if added > 0 or removed > 0:
+                    # added/removedが0でも必ず送信（スナップショットがずれている場合の診断のため）
+                    # ただし origin == after の場合（完全一致）はスキップ
+                    if _origin != _after:
                         await ws.send_json({
                             "type": "diff_result",
                             "path": args.get("path", ""),
@@ -1333,6 +1335,25 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                             "removed": removed,
                             "diff": "".join(_udiff)
                         })
+                    else:
+                        logger.warning(f"[Diff] SKIP: origin == after, no change detected for {args.get('path','')}")
+
+            # HTMLファイルの先頭が壊れていたら自動修正（JSやコードが混入した場合）
+            if result.get("success") and name in ("write_file", "apply_diff"):
+                _html_path = session_dir / args.get("path", "")
+                if _html_path.suffix.lower() in (".html", ".htm") and _html_path.exists():
+                    _html_content = _html_path.read_text(errors="replace")
+                    _doctype_pos = _html_content.find("<!DOCTYPE")
+                    if _doctype_pos < 0:
+                        _doctype_pos = _html_content.find("<!doctype")
+                    if _doctype_pos > 0:
+                        # DOCTYPE前にゴミがある → 自動削除
+                        _garbage = _html_content[:_doctype_pos]
+                        logger.warning(f"[HTML] DOCTYPE not at start ({_doctype_pos} chars before it). Auto-removing garbage.")
+                        _fixed = _html_content[_doctype_pos:]
+                        _html_path.write_text(_fixed)
+                        result["html_fixed"] = f"Removed {_doctype_pos} chars of garbage before <!DOCTYPE>"
+                        await ws.send_json({"type": "stream", "content": f"⚠️ HTMLの先頭に不要なコードが混入していたため自動修正しました ({_doctype_pos}文字削除)"})
 
             # write_file / apply_diff 成功時: output/ へ自動コピー
             if result.get("success") and name in ("write_file", "apply_diff"):
