@@ -972,17 +972,20 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
     env["ANTHROPIC_API_KEY"] = "dummy"  # LiteLLMが実際のキーを管理
     env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 
+    # --print + --verbose + --output-format stream-json の3つが必須
+    # --input-format stream-json は --print と併用する場合のみ有効
+    # --cwd は存在しないフラグ → create_subprocess_execのcwd引数で渡す
+    # --no-update-check は存在しないフラグ → 削除
     cmd = [
         claude_bin,
-        "--output-format", "stream-json",
-        "--input-format", "stream-json",
-        "--no-update-check",
         "-p", user_message,
-        "--cwd", str(session_dir),
-        "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep,LS",
+        "--output-format", "stream-json",
+        "--verbose",                          # stream-jsonに必須
+        "--permission-mode", "acceptEdits",  # ファイル編集を自動承認
+        "--allowedTools", "Bash,Edit,Glob,Grep,LS,Read,Write",
     ]
 
-    logger.info(f"[ClaudeCode] spawn: {' '.join(cmd[:4])}... cwd={session_dir}")
+    logger.info(f"[ClaudeCode] spawn: cwd={session_dir}")
 
     _file_snapshots: dict = {}
 
@@ -993,10 +996,12 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
-            cwd=str(session_dir),
+            cwd=str(session_dir),  # --cwdフラグではなくここで指定
         )
 
         assistant_text = ""
+        # tool_useとtool_resultを紐づけるためのキャッシュ
+        _pending_tool_uses: dict = {}  # id -> {name, input}
 
         async def read_stdout():
             nonlocal assistant_text
@@ -1004,58 +1009,84 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                 line = await proc.stdout.readline()
                 if not line:
                     break
+                raw_line = line.decode("utf-8", errors="replace").strip()
+                if not raw_line:
+                    continue
                 try:
-                    msg = json.loads(line.decode("utf-8", errors="replace").strip())
+                    msg = json.loads(raw_line)
                 except json.JSONDecodeError:
                     continue
 
                 mtype = msg.get("type", "")
 
                 if mtype == "assistant":
-                    # アシスタントのテキスト/ツール使用
+                    # アシスタントのテキスト + ツール呼び出し宣言
                     content = msg.get("message", {}).get("content", [])
                     for block in content:
-                        if isinstance(block, dict):
-                            if block.get("type") == "text":
-                                txt = clean_text(block.get("text", ""))
-                                if txt:
-                                    assistant_text += txt
-                                    await ws.send_json({"type": "stream", "content": txt})
-                            elif block.get("type") == "tool_use":
-                                tool_name = block.get("name", "")
-                                tool_input = block.get("input", {})
-                                label = _tool_status_label(tool_name, tool_input)
-                                await ws.send_json({"type": "agent_status", "label": label, "tool": tool_name, "args": tool_input})
-                                save_message(chat_id, "tool", json.dumps({"tool": tool_name, "args": to_json_safe(tool_input)}), msg_type="tool_call")
+                        if not isinstance(block, dict):
+                            continue
+                        btype = block.get("type", "")
+                        if btype == "text":
+                            txt = clean_text(block.get("text", ""))
+                            if txt:
+                                assistant_text += txt
+                                await ws.send_json({"type": "stream", "content": txt})
+                        elif btype == "tool_use":
+                            tool_id = block.get("id", "")
+                            tool_name = block.get("name", "")
+                            tool_input = block.get("input", {})
+                            # tool_idでキャッシュ（後でtool_resultと紐づけるため）
+                            _pending_tool_uses[tool_id] = {"name": tool_name, "input": tool_input}
+                            label = _tool_status_label(tool_name, tool_input)
+                            await ws.send_json({"type": "agent_status", "label": label, "tool": tool_name, "args": tool_input})
+                            save_message(chat_id, "tool", json.dumps({"tool": tool_name, "args": to_json_safe(tool_input)}), msg_type="tool_call")
 
-                elif mtype == "tool_result":
-                    tool_name = msg.get("tool_name", "")
-                    result = msg.get("content", {})
-                    if isinstance(result, list):
-                        result = {"output": " ".join(b.get("text", "") for b in result if isinstance(b, dict))}
-                    await ws.send_json({"type": "tool_result", "tool": tool_name, "result": result})
-                    save_message(chat_id, "tool", json.dumps({"tool": tool_name, "result": result}), msg_type="tool_result")
-
-                    # ファイル編集ツールの場合、diffを計算して送信
-                    if tool_name in ("Write", "Edit") and isinstance(result, dict):
-                        fpath_str = msg.get("tool_input", {}).get("file_path") or msg.get("tool_input", {}).get("path", "")
-                        if fpath_str:
-                            await _send_diff_for_file(fpath_str, session_dir, _file_snapshots, ws)
+                elif mtype == "user":
+                    # Claude Code が tool_result を user メッセージとして返す
+                    content = msg.get("message", {}).get("content", [])
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") == "tool_result":
+                            tool_id = block.get("tool_use_id", "")
+                            tool_info = _pending_tool_uses.get(tool_id, {})
+                            tool_name = tool_info.get("name", "unknown")
+                            tool_input = tool_info.get("input", {})
+                            raw_content = block.get("content", "")
+                            if isinstance(raw_content, list):
+                                result_text = " ".join(b.get("text", "") for b in raw_content if isinstance(b, dict))
+                            else:
+                                result_text = str(raw_content)
+                            result = {"output": result_text}
+                            await ws.send_json({"type": "tool_result", "tool": tool_name, "result": result})
+                            save_message(chat_id, "tool", json.dumps({"tool": tool_name, "result": result}), msg_type="tool_result")
+                            # Write/Editの場合はdiffを送信
+                            if tool_name in ("Write", "Edit"):
+                                fpath_str = tool_input.get("file_path") or tool_input.get("path", "")
+                                if fpath_str:
+                                    await _send_diff_for_file(fpath_str, session_dir, _file_snapshots, ws)
 
                 elif mtype == "result":
-                    # 最終結果
+                    # 最終結果（type="result"）
+                    is_error = msg.get("is_error", False)
                     final = msg.get("result", "")
-                    if final and isinstance(final, str):
+                    if final and isinstance(final, str) and not is_error:
                         cleaned = clean_text(final)
+                        # assistantメッセージで既にストリームしていない場合のみ送信
                         if cleaned and cleaned not in assistant_text:
                             assistant_text = cleaned
                             await ws.send_json({"type": "stream", "content": cleaned})
+                    if is_error and final:
+                        logger.error(f"[ClaudeCode] result error: {final}")
+                        await ws.send_json({"type": "error", "content": final})
                     await ws.send_json({"type": "stream_end"})
 
-                elif mtype == "error":
-                    err = msg.get("error", str(msg))
-                    logger.error(f"[ClaudeCode] error: {err}")
-                    await ws.send_json({"type": "error", "content": str(err)})
+                elif mtype == "system":
+                    # init情報（無視）
+                    logger.info(f"[ClaudeCode] system init model={msg.get('model','')} session={msg.get('session_id','')[:8]}")
+
+                else:
+                    logger.debug(f"[ClaudeCode] unknown msg type={mtype}")
 
         async def read_stderr():
             while True:

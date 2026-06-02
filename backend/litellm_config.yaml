@@ -17,10 +17,16 @@ model_list:
       api_key: os.environ/GEMINI_API_KEY_4
 
 router_settings:
-  routing_strategy: least-busy
-  num_retries: 3
+  # simple-shuffleはデフォルト戦略。429/cooldown中のキーを除外して次を選ぶ
+  routing_strategy: simple-shuffle
+  # 失敗1回でcooldown対象に
   allowed_fails: 1
+  # cooldown時間（秒）。Gemini無料枠のRPMリセットは60秒
   cooldown_time: 60
+  # cooldown中も全キーが落ちていたら再試行する
+  num_retries: 3
 
 litellm_settings:
+  # 429はretryable errorとして扱う（デフォルトでそうなっているが明示）
+  drop_params: false
   set_verbose: false
