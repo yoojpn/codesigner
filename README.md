@@ -1,107 +1,64 @@
 # Codesigner ⌘
 
-自分専用AIコーディングエージェント。Gemini 3.1 Flash-Lite × Google AI Studio無料枠で動作。
+自分専用AIコーディングエージェント。**Claude Code CLI + LiteLLM + Gemini**で動作。
 
-## 構成
+## アーキテクチャ
 
 ```
-codesigner.site        → Cloudflare Pages（WebUI）
-api.codesigner.site    → Oracle Cloud VM（バックエンド）
+ブラウザ（React UI）
+    ↓ WebSocket
+Python FastAPI（ブリッジ）
+    ↓ subprocess NDJSON
+Claude Code CLI
+    ↓ ANTHROPIC_BASE_URL
+LiteLLM proxy（localhost:4000）
+    ↓ キーローテーション
+Gemini 3.1 Flash-Lite（最大4キー）
 ```
 
 ## 機能
 
-- 💬 **チャット管理** — ChatGPTライクな複数チャット、履歴はSQLiteに永続保存
-- 🗂️ **セッションサンドボックス** — チャットごとに独立した作業フォルダ（削除すると自動消去）
-- 📝 **ファイル編集** — write_file / apply_diff（unified diff）
-- ⚡ **コマンド実行** — sudo/外部アクセス時のみ承認、それ以外は自動実行
-- 🌐 **Web検索 + URL取得** — ドキュメント参照に活用
-- ⬇️ **ファイルダウンロード** — copy_to_outputでUIからDL
-- 🔑 **APIキーローテーション** — 最大4キーで無料枠を最大活用
-- 🧠 **Thinkingモード** — `/thinking on/off/auto` で切り替え（ThinkingConfig対応）
+- 💬 **チャット管理** — 複数チャット、履歴はSQLiteに永続保存
+- 🗂️ **セッションサンドボックス** — チャットごとに独立した作業フォルダ
+- 📝 **ファイル編集** — Claude Code組み込みツール（Read/Write/Edit/Bash/Glob/Grep）
+- ⚡ **コマンド実行** — Bash経由で自動実行
+- 🔑 **APIキーローテーション** — LiteLLMで最大4キーをローテーション
+- 🔄 **自動コンテキスト管理** — Claude Code側で自動コンパクション
 
 ## セットアップ（Oracle VM）
 
 ```bash
-# 依存インストール
+# Node.js（v18+）が必要
+npm install -g @anthropic-ai/claude-code
+
+# Python依存
 cd backend
 pip install -r requirements.txt
 
 # 環境変数設定
 cp .env.example .env
-# .envを編集してGEMMA_API_KEYSに最大4つのキーをカンマ区切りで設定
+# .envにGEMINI_API_KEY_1〜4を設定
 
-# 起動
+# 起動（LiteLLM + FastAPI）
 ./start.sh
 ```
 
-## デプロイ
+## 環境変数（.env）
 
-### Oracle VM（バックエンド）
-
-```bash
-# nginx設定
-sudo apt install nginx certbot python3-certbot-nginx
-sudo certbot --nginx -d api.codesigner.site
-
-# systemdサービス登録
-sudo cp codesigner.service /etc/systemd/system/
-sudo systemctl enable --now codesigner
+```
+GEMINI_API_KEY_1=your_key_1
+GEMINI_API_KEY_2=your_key_2
+GEMINI_API_KEY_3=your_key_3
+GEMINI_API_KEY_4=your_key_4
+LITELLM_BASE_URL=http://localhost:4000
+WORKSPACE=/workspace
 ```
 
-### Cloudflare Pages（フロントエンド）
+APIキーは https://aistudio.google.com/apikey で取得。
 
-| 設定項目 | 値 |
-|---|---|
-| Root directory | `frontend` |
-| Build command | `npm run build` |
-| Build output | `dist` |
-| 環境変数 | `VITE_BACKEND_URL=https://api.codesigner.site` |
+## モデル変更
 
-## 承認フロー
-
-| 操作 | 承認 |
-|---|---|
-| ファイル読み書き（セッション内） | 自動 |
-| コマンド実行（通常） | 自動 |
-| sudo / su / pkexec | **要承認** |
-| セッション外へのファイルアクセス | **要承認** |
-
-## モデル
-
-現在: **Gemini 3.1 Flash-Lite** (`gemini-3.1-flash-lite`)
-- RPD: 500/キー × 最大4キー = **2,000リクエスト/日**
-- ThinkingConfig対応（`thinking_budget` で制御）
-- メタコメント漏れなし
-
-## ベンチマーク比較: Gemini 3.1 Flash-Lite vs Gemma 4 31B
-
-コーディングエージェント用途での比較。
-
-### 性能
-
-| ベンチマーク | Gemini 3.1 Flash-Lite | Gemma 4 31B |
-|---|---|---|
-| HumanEval (コーディング) | **~75%** | ~70% |
-| MBPP (Python問題) | **~72%** | ~65% |
-| MATH | ~60% | **~65%** |
-| MMLU | ~72% | **~76%** |
-| 推論全般 | ◯ | ◎ |
-
-### 実用性（コーディングエージェント用途）
-
-| 項目 | Gemini 3.1 Flash-Lite | Gemma 4 31B |
-|---|---|---|
-| メタコメント漏れ | ✅ **なし** | ❌ 頻発 |
-| Thinking制御 | ✅ **ThinkingConfig対応** | ❌ API非対応 |
-| レスポンス速度 | ✅ **2.5倍速い** | 普通 |
-| 無料枠 RPD/キー | 500 | 1,500 |
-| 4キー合計 RPD | **2,000/日** | 6,000/日 |
-| ツール呼び出し精度 | ✅ 高い | △ やや不安定 |
-| 日本語応答 | ✅ 安定 | ❌ 英語混入あり |
-
-### 結論
-
-**コーディングエージェントとしての実用性はGemini 3.1 Flash-Liteが大幅に上回る。**
-
-Gemma 4 31Bはベンチマーク上の推論性能は高いが、APIを通すとthinking内容がレスポンスに漏出する問題が制御不能で、コーディングエージェントとして使い続けるのが困難。Gemini 3.1 Flash-LiteはThinkingConfigで完全制御でき、速度・安定性ともに優れている。RPDは1/3になるが4キーで2,000/日あれば個人・小チーム用途には十分。
+`backend/litellm_config.yaml` の `model:` を変更するだけ。例：
+- `gemini/gemini-3.1-flash-lite`（デフォルト、RPD 500/キー）
+- `gemini/gemini-3.5-flash`（高性能、RPD 20/キー）
+- `gemini/gemma-4-27b-it`（RPD 1500/キー、無料枠最大）

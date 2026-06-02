@@ -1,0 +1,26 @@
+model_list:
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: gemini/gemini-3.1-flash-lite
+      api_key: os.environ/GEMINI_API_KEY_1
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: gemini/gemini-3.1-flash-lite
+      api_key: os.environ/GEMINI_API_KEY_2
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: gemini/gemini-3.1-flash-lite
+      api_key: os.environ/GEMINI_API_KEY_3
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: gemini/gemini-3.1-flash-lite
+      api_key: os.environ/GEMINI_API_KEY_4
+
+router_settings:
+  routing_strategy: least-busy
+  num_retries: 3
+  allowed_fails: 1
+  cooldown_time: 60
+
+litellm_settings:
+  set_verbose: false

@@ -943,448 +943,174 @@ def _tool_status_label(tool: str, args: dict) -> str:
     return f"{tool} 実行中..."
 
 
-# ---- Agent Loop with streaming ----
+# ---- Agent Loop: Claude Code CLI subprocess (NDJSON) ----
 async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir: Path, chat_id: str, thinking_level: str = "none"):
-    _, client = rotator.next_client()
-    messages = history + [types.Content(role="user", parts=[types.Part(text=user_message)])]
+    """
+    Claude Code CLIをサブプロセスとして起動し、NDJSONストリームをWebSocketに流す。
+    LiteLLMプロキシ(localhost:4000)経由でGeminiキーローテーションを使用。
+    """
+    litellm_url = os.getenv("LITELLM_BASE_URL", "http://localhost:4000")
+    claude_bin = shutil.which("claude") or os.path.expanduser("~/.npm-global/bin/claude")
 
-    # diff失敗カウンタ（無限ループ防止）
-    diff_fail_count = 0
-    diff_fail_per_file: dict = {}  # ファイルごとの失敗カウント
-    MAX_DIFF_RETRIES = 5  # 全体上限
-    MAX_PER_FILE = 3       # 同一ファイルの上限
-    _recent_tool_calls: list = []  # ループ検出用（直近の tool:key 履歴）
-    _file_snapshots: dict = {}  # ファイルごとの初回スナップショット（累積diff計算用）
-
-    for _ in range(30):
-        response = None
-        last_err = None
-        tried = set()
-        for model in MODELS:
-            for attempt in range(len(rotator.keys)):
-                try_key = rotator.keys[(rotator.index + attempt) % len(rotator.keys)]
-                if (model, try_key) in tried:
-                    continue
-                tried.add((model, try_key))
-                try_client = rotator.get_client(try_key)
-                try:
-                    accumulated_text = ""
-                    tool_calls = []
-                    candidate_content = None
-
-                    # thinking_level設定: 3.1 Flash-LiteはThinkingLevel APIをサポート
-                    # high=最高品質(推論モデルに近い), low=コーディングに最適化, none=オフ
-                    if thinking_level in ("on", "high"):
-                        _tlevel = "high"
-                    elif thinking_level == "auto":
-                        _tlevel = "high" if should_think(user_message) else "low"
-                    else:
-                        _tlevel = "low"  # デフォルトは常にlowで品質を維持（offにしない）
-
-                    try:
-                        thinking_config = types.ThinkingConfig(thinking_level=_tlevel)
-                    except Exception:
-                        # フォールバック: budgetベース（旧API）
-                        thinking_config = types.ThinkingConfig(
-                            thinking_budget=2048 if _tlevel == "high" else 512
-                        )
-
-                    gen_config = types.GenerateContentConfig(
-                        system_instruction=make_system_prompt(session_dir),
-                        tools=TOOL_DEFS,
-                        tool_config=types.ToolConfig(
-                            function_calling_config=types.FunctionCallingConfig(mode="AUTO")
-                        ),
-                        temperature=0.2,
-                        thinking_config=thinking_config,
-                    )
-
-                    announced_tools = set()
-
-                    logger.info(f"[Gemini] calling model={model} key=...{try_key[-6:]} msgs={len(messages)} thinking={_tlevel}")
-                    async for chunk in await try_client.aio.models.generate_content_stream(
-                        model=model, contents=messages, config=gen_config
-                    ):
-                        if not chunk.candidates:
-                            continue
-                        candidate = chunk.candidates[0]
-                        candidate_content = candidate.content
-                        for part in candidate.content.parts:
-                            if part.text:
-                                cleaned = clean_text(part.text)
-                                if cleaned:
-                                    accumulated_text += cleaned
-                                    await ws.send_json({"type": "stream", "content": cleaned})
-                            if part.function_call:
-                                tool_calls.append(part.function_call)
-                                fc_name = part.function_call.name
-                                fc_args = dict(part.function_call.args) if part.function_call.args else {}
-                                tool_key = f"{fc_name}:{fc_args.get('path','')}{fc_args.get('command','')}{fc_args.get('query','')}"
-                                if tool_key not in announced_tools:
-                                    announced_tools.add(tool_key)
-                                    label = _tool_status_label(fc_name, fc_args)
-                                    await ws.send_json({"type": "agent_status", "label": label, "tool": fc_name, "args": fc_args})
-
-                    logger.info(f"[Gemini] done: text_len={len(accumulated_text)} tool_calls={len(tool_calls)}")
-                    if accumulated_text:
-                        await ws.send_json({"type": "stream_end"})
-
-                    response = {"text": accumulated_text, "tool_calls": tool_calls, "content": candidate_content}
-                    rotator.index = rotator.keys.index(try_key) + 1
-                    break
-                except Exception as e:
-                    err_str = str(e)
-                    logger.error(f"[Gemini] error model={model} key=...{try_key[-6:]}: {err_str[:200]}")
-                    if any(x in err_str for x in ("503", "500", "UNAVAILABLE", "INTERNAL", "429", "RESOURCE_EXHAUSTED")):
-                        last_err = e
-                        await asyncio.sleep(1)
-                        continue
-                    raise
-            if response is not None:
+    if not claude_bin or not os.path.exists(claude_bin):
+        # フォールバック: npm globalパスを探す
+        for candidate in [
+            "/usr/local/bin/claude",
+            "/usr/bin/claude",
+            os.path.expanduser("~/.local/bin/claude"),
+        ]:
+            if os.path.exists(candidate):
+                claude_bin = candidate
                 break
+        else:
+            await ws.send_json({"type": "error", "content": "claude CLI not found. Run: npm install -g @anthropic-ai/claude-code"})
+            await ws.send_json({"type": "done"})
+            return history
 
-        if response is None:
-            raise last_err
+    env = os.environ.copy()
+    env["ANTHROPIC_BASE_URL"] = litellm_url
+    env["ANTHROPIC_API_KEY"] = "dummy"  # LiteLLMが実際のキーを管理
+    env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 
-        text = response["text"]
-        tool_calls = response["tool_calls"]
-        candidate_content = response["content"]
+    cmd = [
+        claude_bin,
+        "--output-format", "stream-json",
+        "--input-format", "stream-json",
+        "--no-update-check",
+        "-p", user_message,
+        "--cwd", str(session_dir),
+        "--allowedTools", "Read,Write,Edit,Bash,Glob,Grep,LS",
+    ]
 
-        if not tool_calls:
-            if candidate_content:
-                messages.append(candidate_content)
-            # 空レスポンス（テキストもツールもなし）の場合は継続を促す
-            if not text:
-                logger.warning("[Inject] empty response (no text, no tools) — injecting continue")
-                messages.append(types.Content(role="user", parts=[types.Part(text=(
-                    "[SYSTEM] You returned an empty response. The task is NOT done. "
-                    "You MUST call the next tool immediately to continue the task. "
-                    "Do NOT stop until all changes are complete and you send a final summary."
-                ))]))
-                continue
-            # patchをテキスト出力した場合 → 即座にツール呼び出しを強制
-            if "*** Begin Patch" in text or "*** Update File" in text or "<<<<<<< SEARCH" in text:
-                logger.warning("[Inject] patch output as text detected — forcing tool call")
-                import re as _re
-                _patch_match = _re.search(r'(\*\*\* Begin Patch.*?\*\*\* End Patch)', text, _re.DOTALL)
-                _file_match = _re.search(r'\*\*\* (?:Update|Add) File:\s*(\S+)', text)
-                _patch_text = _patch_match.group(1) if _patch_match else text
-                _patch_path = _file_match.group(1).strip() if _file_match else ""
-                messages.append(types.Content(role="model", parts=[types.Part(text=text)]))
-                messages.append(types.Content(role="user", parts=[types.Part(text=(
-                    f"[SYSTEM] RULE VIOLATION: You output a patch as plain text. "
-                    f"Plain text patches do NOT modify files. "
-                    f"You MUST call apply_diff NOW with path=\"{_patch_path}\" and the exact patch as the diff argument. "
-                    f"Call the tool immediately. Do NOT output text."
-                ))]))
-                continue
-            save_message(chat_id, "assistant", text)
-            break
+    logger.info(f"[ClaudeCode] spawn: {' '.join(cmd[:4])}... cwd={session_dir}")
 
-        if candidate_content:
-            messages.append(candidate_content)
-        tool_response_parts = []
-        has_diff_error = False
+    _file_snapshots: dict = {}
 
-        for fc in tool_calls:
-            name, args = fc.name, dict(fc.args)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            cwd=str(session_dir),
+        )
 
-            # ループ検出: 同一ツール+同一キー引数が直近3回連続したらAIに強制フィードバック
-            _call_key = f"{name}:{args.get('path','')}{args.get('pattern','')}{args.get('query','')}{args.get('command','')}"
-            _recent_tool_calls.append(_call_key)
-            if len(_recent_tool_calls) > 6:
-                _recent_tool_calls.pop(0)
-            if len(_recent_tool_calls) >= 3 and len(set(_recent_tool_calls[-3:])) == 1:
-                # 同じキーが3回連続 → 強制的に別アプローチを促す
-                loop_msg = (f"LOOP DETECTED: You called {name} with the same arguments 3 times in a row with no progress. "
-                           f"STOP. Do NOT call this tool again with these arguments. "
-                           f"Switch to a completely different approach: if search failed, use read_file with line ranges; "
-                           f"if apply_diff failed, read the exact current content with read_file(start_line/end_line) then retry with corrected patch.")
-                tool_response_parts.append(types.Part(
-                    function_response=types.FunctionResponse(name=name, response={"error": loop_msg})
-                ))
-                await ws.send_json({"type": "tool_result", "tool": name, "result": {"error": "ループ検出: 同じ操作を繰り返しています。別の方法で試みます。"}})
-                _recent_tool_calls.clear()
-                continue
+        assistant_text = ""
 
-            logger.info(f"[Tool] {name} args={str(args)[:120]}")
-            save_message(chat_id, "tool", json.dumps({"tool": name, "args": to_json_safe(args)}), msg_type="tool_call")
-            await ws.send_json({"type": "tool_call", "tool": name, "args": to_json_safe(args)})
-
-            required, reason = needs_approval(name, args, session_dir)
-            if required:
-                call_id = str(id(fc))
-                await ws.send_json({"type": "approval_request", "tool": name, "args": args, "call_id": call_id, "reason": reason})
+        async def read_stdout():
+            nonlocal assistant_text
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
                 try:
-                    raw = await asyncio.wait_for(ws.receive_text(), timeout=120)
-                    try:
-                        msg = json.loads(raw)
-                    except json.JSONDecodeError:
-                        msg = {}
-                    if not (msg.get("type") == "approval" and msg.get("approved")):
-                        result = {"cancelled": True}
-                        await ws.send_json({"type": "tool_result", "tool": name, "result": result})
-                        save_message(chat_id, "tool", json.dumps({"tool": name, "result": result}), msg_type="tool_result")
-                        tool_response_parts.append(types.Part(
-                            function_response=types.FunctionResponse(name=name, response=sanitize_result(result))
-                        ))
-                        continue
-                except asyncio.TimeoutError:
-                    result = {"error": "approval timeout"}
-                    tool_response_parts.append(types.Part(
-                        function_response=types.FunctionResponse(name=name, response=sanitize_result(result))
-                    ))
+                    msg = json.loads(line.decode("utf-8", errors="replace").strip())
+                except json.JSONDecodeError:
                     continue
 
-            # apply_diff前のスナップショット（初回のみ保存して累積diff計算用に使う）
-            _snapshot_before = None
-            if name in ("apply_diff", "write_file"):
-                _snap_path = session_dir / args.get("path", "")
-                _fkey = str(_snap_path)
-                if _snap_path.exists():
-                    _snapshot_before = _snap_path.read_text(errors="replace")
-                    # 初回スナップショットを保存（タスク開始時点のファイル状態）
-                    if _fkey not in _file_snapshots:
-                        _file_snapshots[_fkey] = _snapshot_before
+                mtype = msg.get("type", "")
 
-            result = await dispatch_tool(name, args, session_dir, ws=ws)
+                if mtype == "assistant":
+                    # アシスタントのテキスト/ツール使用
+                    content = msg.get("message", {}).get("content", [])
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "text":
+                                txt = clean_text(block.get("text", ""))
+                                if txt:
+                                    assistant_text += txt
+                                    await ws.send_json({"type": "stream", "content": txt})
+                            elif block.get("type") == "tool_use":
+                                tool_name = block.get("name", "")
+                                tool_input = block.get("input", {})
+                                label = _tool_status_label(tool_name, tool_input)
+                                await ws.send_json({"type": "agent_status", "label": label, "tool": tool_name, "args": tool_input})
+                                save_message(chat_id, "tool", json.dumps({"tool": tool_name, "args": to_json_safe(tool_input)}), msg_type="tool_call")
 
-            # run_commandでcpされた場合、コピー先ファイルのスナップショットをcpされた内容で設定（累積diff基点）
-            if name == "run_command" and result.get("exit_code", 1) == 0:
-                cmd = args.get("command", "")
-                import shlex
-                if cmd.strip().startswith("cp "):
-                    try:
-                        parts = shlex.split(cmd)
-                        if len(parts) >= 3:
-                            dest = parts[-1]
-                            dest_key = str(session_dir / dest)
-                            dest_path = session_dir / dest
-                            if dest_path.exists():
-                                # cp直後の内容 = input側の内容。これを基点にすれば「inputからの変更」が累積diffになる
-                                _file_snapshots[dest_key] = dest_path.read_text(errors="replace")
-                                logger.info(f"[Snapshot] set snapshot for {dest} after cp (base for cumulative diff)")
-                                # .diff_appliedマーカーをクリア（cp後は同じdiffを再適用できるようにする）
-                                marker_dir = session_dir / ".diff_applied"
-                                if marker_dir.exists():
-                                    dest_stem = dest_path.name
-                                    for m in marker_dir.glob(f"{dest_stem}_*"):
-                                        m.unlink(missing_ok=True)
-                                    logger.info(f"[Snapshot] cleared diff markers for {dest_stem} after cp")
-                    except Exception as e:
-                        logger.warning(f"[Snapshot] cp detect failed: {e}")
+                elif mtype == "tool_result":
+                    tool_name = msg.get("tool_name", "")
+                    result = msg.get("content", {})
+                    if isinstance(result, list):
+                        result = {"output": " ".join(b.get("text", "") for b in result if isinstance(b, dict))}
+                    await ws.send_json({"type": "tool_result", "tool": tool_name, "result": result})
+                    save_message(chat_id, "tool", json.dumps({"tool": tool_name, "result": result}), msg_type="tool_result")
 
-            # apply_diff / write_file 成功時: 初回スナップショットとの累積diffを送信
-            if name in ("apply_diff", "write_file") and result.get("success"):
-                import difflib
-                _snap_path2 = session_dir / args.get("path", "")
-                _fkey2 = str(_snap_path2)
-                logger.info(f"[Diff] path={args.get('path','')} fkey={_fkey2} exists={_snap_path2.exists()} snapshot_keys={list(_file_snapshots.keys())}")
-                if _snap_path2.exists():
-                    _after = _snap_path2.read_text(errors="replace")
-                    _origin = _file_snapshots.get(_fkey2, None)
-                    if _origin is None:
-                        # スナップショット未設定: apply_diff前に保存したはずだが念のためapply_diff前のスナップショットを使う
-                        _origin = _snapshot_before or ""
-                        _file_snapshots[_fkey2] = _origin
-                        logger.warning(f"[Diff] no snapshot for {_fkey2}, using snapshot_before (len={len(_origin)})")
-                    _before_lines = _origin.splitlines(keepends=True)
-                    _after_lines = _after.splitlines(keepends=True)
-                    _udiff = list(difflib.unified_diff(
-                        _before_lines, _after_lines,
-                        fromfile=f"a/{args.get('path','')}",
-                        tofile=f"b/{args.get('path','')}",
-                        n=3
-                    ))
-                    added = sum(1 for l in _udiff if l.startswith('+') and not l.startswith('+++'))
-                    removed = sum(1 for l in _udiff if l.startswith('-') and not l.startswith('---'))
-                    logger.info(f"[Diff] +{added} -{removed} origin_len={len(_origin)} after_len={len(_after)} udiff_lines={len(_udiff)}")
-                    # added/removedが0でも必ず送信（スナップショットがずれている場合の診断のため）
-                    # ただし origin == after の場合（完全一致）はスキップ
-                    if _origin != _after:
-                        await ws.send_json({
-                            "type": "diff_result",
-                            "path": args.get("path", ""),
-                            "added": added,
-                            "removed": removed,
-                            "diff": "".join(_udiff)
-                        })
-                    else:
-                        logger.warning(f"[Diff] SKIP: origin == after, no change detected for {args.get('path','')}")
+                    # ファイル編集ツールの場合、diffを計算して送信
+                    if tool_name in ("Write", "Edit") and isinstance(result, dict):
+                        fpath_str = msg.get("tool_input", {}).get("file_path") or msg.get("tool_input", {}).get("path", "")
+                        if fpath_str:
+                            await _send_diff_for_file(fpath_str, session_dir, _file_snapshots, ws)
 
-            # write_file / apply_diff 成功時: output/ へ自動コピー
-            if result.get("success") and name in ("write_file", "apply_diff"):
-                file_path = args.get("path", "")
-                if file_path and not file_path.startswith("output/"):
-                    src = session_dir / file_path
-                    if src.exists() and src.is_file():
-                        out_dir = session_dir / "output"
-                        out_dir.mkdir(exist_ok=True)
-                        dest = out_dir / src.name
-                        shutil.copy2(src, dest)
-                        result["output_copied"] = f"output/{src.name}"
-            # tool_resultをDBに保存
-            save_message(chat_id, "tool", json.dumps({"tool": name, "result": result}), msg_type="tool_result")
+                elif mtype == "result":
+                    # 最終結果
+                    final = msg.get("result", "")
+                    if final and isinstance(final, str):
+                        cleaned = clean_text(final)
+                        if cleaned and cleaned not in assistant_text:
+                            assistant_text = cleaned
+                            await ws.send_json({"type": "stream", "content": cleaned})
+                    await ws.send_json({"type": "stream_end"})
 
-            # apply_diffのエラーはUIには軽く出す（スピナーを止めるため）、AIへは詳細フィードバック
-            if name == "apply_diff" and result.get("error") and result.get("error") != "already_applied":
-                # UIにはエラーを送る（resultがundefinedのままだとスピナーが止まらない）
-                await ws.send_json({"type": "tool_result", "tool": name, "result": {"error": result.get("error", "patch failed"), "retrying": True}})
-                # 失敗箇所周辺の内容をAIにフィードバック（全文でなくHINT周辺50行のみ行番号付き）
-                _fpath = args.get("path", "")
-                _auto_ctx = ""
-                if _fpath:
-                    try:
-                        _src = session_dir / _fpath
-                        if _src.exists():
-                            _flines = _src.read_text(errors="replace").splitlines()
-                            _total = len(_flines)
-                            _hint_line = None
-                            _err_str = str(result.get("error", ""))
-                            import re as _re2
-                            _hm = _re2.search(r"line[s]?\s+(\d+)", _err_str, _re2.IGNORECASE)
-                            if _hm:
-                                _hint_line = int(_hm.group(1)) - 1
-                            if _hint_line is None:
-                                _diff_text = args.get("diff", "")
-                                _search_first = ""
-                                for _dl in _diff_text.splitlines():
-                                    if _dl.startswith("<<<<<<< SEARCH") or _dl.startswith("*** Begin") or _dl.startswith("@@"):
-                                        continue
-                                    if _dl.startswith("=======") or _dl.startswith(">>>>>>> REPLACE") or _dl.startswith("*** "):
-                                        break
-                                    _stripped = (_dl[1:] if _dl and _dl[0] in " -+" else _dl).strip()
-                                    if _stripped:
-                                        _search_first = _stripped
-                                        break
-                                if _search_first:
-                                    for _idx, _l in enumerate(_flines):
-                                        if _search_first[:40] in _l:
-                                            _hint_line = _idx
-                                            break
-                            _s = max(0, (_hint_line - 25) if _hint_line is not None else 0)
-                            _e2 = min(_total, (_hint_line + 25) if _hint_line is not None else 80)
-                            _snippet = "\n".join(f"{_i+1}: {_flines[_i]}" for _i in range(_s, _e2))
-                            _auto_ctx = (
-                                f"PATCH FAILED. Exact content of {_fpath} lines {_s+1}-{_e2} of {_total} (with line numbers):\n"
-                                f"```\n{_snippet}\n```\n"
-                                f"Your SEARCH block must match these lines EXACTLY character-for-character. "
-                                f"Copy lines verbatim. Use search_in_file to find the exact location first."
-                            )
-                    except Exception:
-                        pass
-                _enriched = sanitize_result(result, max_len=100000)
-                if _auto_ctx and isinstance(_enriched, dict):
-                    _enriched = dict(_enriched)
-                    _enriched["patch_failure_context"] = _auto_ctx
-                diff_fail_count += 1
-                _fpath_fail_count = diff_fail_per_file.get(_fpath, 0) + 1
-                diff_fail_per_file[_fpath] = _fpath_fail_count
-                # 同一ファイルへの失敗が2回以上: SEARCH/REPLACE方式への切替を強制
-                if _fpath_fail_count >= 2 and isinstance(_enriched, dict):
-                    _enriched = dict(_enriched)
-                    _enriched["FORCE_SWITCH"] = (
-                        f"apply_diff has failed {_fpath_fail_count} times on '{_fpath}'. "
-                        f"STOP using V4A/unified diff format. "
-                        f"Switch to SEARCH/REPLACE format immediately:\n"
-                        f"<<<<<<< SEARCH\n(exact lines to replace, copied verbatim from read_file)\n=======\n(new lines)\n>>>>>>> REPLACE\n"
-                        f"First call read_file(path='{_fpath}', start_line=N, end_line=M) to get EXACT content around the target location, "
-                        f"then use those exact characters in your SEARCH block. No guessing."
-                    )
-                tool_response_parts.append(types.Part(
-                    function_response=types.FunctionResponse(name=name, response=_enriched)
-                ))
-                has_diff_error = True
-                continue
-            else:
-                await ws.send_json({"type": "tool_result", "tool": name, "result": result})
-            max_len = 500000 if name == "read_file" else 100000
-            tool_response_parts.append(types.Part(
-                function_response=types.FunctionResponse(name=name, response=sanitize_result(result, max_len=max_len))
-            ))
+                elif mtype == "error":
+                    err = msg.get("error", str(msg))
+                    logger.error(f"[ClaudeCode] error: {err}")
+                    await ws.send_json({"type": "error", "content": str(err)})
 
-            # diff成功でカウンタリセット
-            if name == "apply_diff" and result.get("success"):
-                diff_fail_count = 0
-                file_path = args.get("path", "")
-                if file_path in diff_fail_per_file:
-                    del diff_fail_per_file[file_path]
-                # 重複実装チェック: パッチで追加した識別子がファイルに2回以上あれば警告
-                import re as _re3
-                _diff_text = args.get("diff", "")
-                _added_ids = set()
-                for _dl in _diff_text.splitlines():
-                    if not (_dl.startswith("+") and not _dl.startswith("+++")):
-                        continue
-                    # id="xxx", function xxx, class xxx, def xxx などを抽出
-                    for _pat in [r'id=["\']([\w-]+)["\']', r'function\s+(\w+)\s*\(', r'def\s+(\w+)\s*\(', r'class[=\s]["\']([\w-]+)["\']']:
-                        for _m in _re3.findall(_pat, _dl):
-                            if len(_m) > 4:
-                                _added_ids.add(_m)
-                if _added_ids and file_path:
-                    _fpath_dup = session_dir / file_path
-                    if _fpath_dup.exists():
-                        _ftext = _fpath_dup.read_text(errors="replace")
-                        _dups = [_id for _id in _added_ids if _ftext.count(_id) >= 2]
-                        if _dups:
-                            _dup_warn = (
-                                f"[SYSTEM] DUPLICATE DETECTED after apply_diff on {file_path}. "
-                                f"These identifiers now appear 2+ times in the file: {_dups}. "
-                                f"This means you added something that already existed. "
-                                f"You MUST immediately search_in_file for each duplicate, find the redundant copy, and remove it with apply_diff."
-                            )
-                            logger.warning(f"[DupCheck] duplicates in {file_path}: {_dups}")
-                            tool_response_parts.append(types.Part(
-                                function_response=types.FunctionResponse(name="apply_diff", response={"success": True, "warning": _dup_warn})
-                            ))
+        async def read_stderr():
+            while True:
+                line = await proc.stderr.readline()
+                if not line:
+                    break
+                logger.warning(f"[ClaudeCode stderr] {line.decode('utf-8', errors='replace').rstrip()}")
 
-        messages.append(types.Content(role="user", parts=tool_response_parts))
+        await asyncio.gather(read_stdout(), read_stderr())
+        await proc.wait()
 
-        # コンテキストクリーンアップ: messagesが長くなりすぎたら古いtool履歴を圧縮
-        # diff失敗ログが積み重なると品質が落ちるため、20ターンを超えたら古いツール履歴を削除
-        if len(messages) > 20:
-            # user/modelのテキストメッセージは保持、古いtool_responseのみ削除
-            _keep = []
-            _tool_count = 0
-            for _m in reversed(messages):
-                _has_tool_resp = (
-                    hasattr(_m, 'parts') and _m.parts and
-                    any(hasattr(p, 'function_response') and p.function_response for p in _m.parts)
-                )
-                if _has_tool_resp:
-                    _tool_count += 1
-                    if _tool_count <= 10:  # 直近10ターン分のtool responseは保持
-                        _keep.append(_m)
-                else:
-                    _keep.append(_m)
-            messages = list(reversed(_keep))
+        if assistant_text:
+            save_message(chat_id, "assistant", assistant_text)
 
-        # diff失敗が多すぎる場合はwrite_fileへの切替を強制
-        if diff_fail_count >= MAX_DIFF_RETRIES:
-            # AIに最終手段としてwrite_fileを使わせる
-            _force_msg = (
-                f"[SYSTEM] apply_diff has failed {diff_fail_count} times. "
-                f"LAST RESORT: use write_file to rewrite the affected file(s) completely. "
-                f"Steps: 1) read_file the current content, 2) modify it in memory with all required changes, "
-                f"3) write_file with the complete new content. Do NOT give up — complete the task."
-            )
-            messages.append(types.Content(role="user", parts=[types.Part(text=_force_msg)]))
-            diff_fail_count = 0  # リセットして続行
-            has_diff_error = False
-            continue
+        logger.info(f"[ClaudeCode] done rc={proc.returncode}")
 
-        # diff失敗の場合はAIに再試行させる（ループ継続、テキストは破棄）
-        if has_diff_error:
-            continue
+    except Exception as e:
+        logger.error(f"[ClaudeCode] exception: {e}")
+        await ws.send_json({"type": "error", "content": str(e)})
 
-        # ツール呼び出しがあった場合は継続（AIはまだ作業中）
-        # NOTE: text='' かつ tool_calls>0 は正常動作。Gemini Flashはツール呼び出し時にテキストを返さない。
-        # stallingは「テキストなし・ツールなし」のケースのみ（空レスポンス）= 上のempty response処理で対応済み。
-        # 「短い宣言テキスト+ツールあり」のstalling注入は削除: コンテキストを汚染してGeminiが迷走する原因だった。
-
-    logger.info("[Agent] done")
     await ws.send_json({"type": "done"})
-    return messages
+
+    # historyはClaude Code側が管理するため、呼び出し元に空リストを返す（互換のため）
+    return []
+
+
+async def _send_diff_for_file(fpath_str: str, session_dir: Path, snapshots: dict, ws: WebSocket):
+    """ファイル編集後にdiff_resultをWebSocketに送信する"""
+    import difflib
+    try:
+        fpath = (session_dir / fpath_str).resolve()
+        if not fpath.exists():
+            return
+        after = fpath.read_text(errors="replace")
+        fkey = str(fpath)
+        before = snapshots.get(fkey, "")
+        if before == after:
+            return
+        before_lines = before.splitlines(keepends=True)
+        after_lines = after.splitlines(keepends=True)
+        udiff = list(difflib.unified_diff(before_lines, after_lines,
+                                           fromfile=f"a/{fpath_str}", tofile=f"b/{fpath_str}", n=3))
+        added = sum(1 for l in udiff if l.startswith('+') and not l.startswith('+++'))
+        removed = sum(1 for l in udiff if l.startswith('-') and not l.startswith('---'))
+        await ws.send_json({
+            "type": "diff_result",
+            "path": fpath_str,
+            "added": added,
+            "removed": removed,
+            "diff": "".join(udiff),
+        })
+        # 次のdiff計算の基点を更新
+        snapshots[fkey] = after
+    except Exception as e:
+        logger.warning(f"[Diff] failed for {fpath_str}: {e}")
 
 # ---- WebSocket ----
 @app.websocket("/ws/{chat_id}")
@@ -1400,13 +1126,9 @@ async def websocket_endpoint(ws: WebSocket, chat_id: str):
     session_dir = WORKSPACE / chat["session_dir"]
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    # historyはuser/assistantのみ（tool系は除く）
+    # Claude Code CLIはステートレス（セッション内の会話履歴を自身で管理）
+    # historyは互換性のため空リストとして保持
     history = []
-    for m in chat["messages"]:
-        if m["msg_type"] in ("tool_call", "tool_result"):
-            continue
-        role = "user" if m["role"] == "user" else "model"
-        history.append(types.Content(role=role, parts=[types.Part(text=m["content"])]))
 
     thinking_level = "none"
 
