@@ -61,10 +61,24 @@ def get_db():
 def now_iso():
     return datetime.utcnow().isoformat()
 
-# ---- OpenRouter API Key ----
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-if not OPENROUTER_API_KEY:
-    raise RuntimeError("OPENROUTER_API_KEY not set in .env")
+# ---- Gemini API Key ローテーション ----
+_GEMINI_KEYS = [
+    k for k in [
+        os.getenv("GEMINI_API_KEY_1"),
+        os.getenv("GEMINI_API_KEY_2"),
+        os.getenv("GEMINI_API_KEY_3"),
+        os.getenv("GEMINI_API_KEY_4"),
+    ] if k
+]
+if not _GEMINI_KEYS:
+    raise RuntimeError("GEMINI_API_KEY_1 (or _2/_3/_4) not set in .env")
+_gemini_key_index = 0
+
+def get_next_gemini_key() -> str:
+    global _gemini_key_index
+    key = _GEMINI_KEYS[_gemini_key_index % len(_GEMINI_KEYS)]
+    _gemini_key_index += 1
+    return key
 
 # ---- Session / Chat ----
 def make_session_dir() -> Path:
@@ -810,10 +824,13 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
     litellm_url = os.getenv("LITELLM_BASE_URL", "http://localhost:4000")
     litellm_key = os.getenv("LITELLM_MASTER_KEY", "sk-litellm")
+    gemini_key = get_next_gemini_key()
     env = os.environ.copy()
     env["ANTHROPIC_BASE_URL"] = litellm_url
     env["ANTHROPIC_API_KEY"] = litellm_key
     env["ANTHROPIC_AUTH_TOKEN"] = litellm_key
+    env["GEMINI_API_KEY"] = gemini_key
+    env["GOOGLE_API_KEY"] = gemini_key
     env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 
     # --print + --verbose + --output-format stream-json の3つが必須
