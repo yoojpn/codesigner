@@ -864,6 +864,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
         "--allowedTools", "Bash,Edit,Glob,Grep,LS,Read,Write,WebSearch,WebFetch",
         "--system-prompt", (
             "あなたはCodesignerというAIコーディングアシスタントです。\n"
+            f"【作業ディレクトリ】現在のcwdは {session_dir} です。ファイルへのアクセスは必ずこのディレクトリからの相対パス（例: input/cad.html）または絶対パスで行うこと。/home/user/ などの存在しないパスを推測して使ってはならない。\n"
             "【絶対ルール】\n"
             "1. 回答は必ず日本語のみで行うこと。英語で回答してはならない。\n"
             "2. ツール（Read/Bash/WebSearch等）の実行結果をそのまま出力してはならない。必ず自分の言葉で日本語に要約・解釈して回答すること。\n"
