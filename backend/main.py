@@ -808,11 +808,12 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
             await ws.send_json({"type": "done"})
             return history
 
+    litellm_url = os.getenv("LITELLM_BASE_URL", "http://localhost:4000")
     env = os.environ.copy()
-    env["ANTHROPIC_BASE_URL"] = "https://openrouter.ai/api"  # 末尾に/v1なし
-    env["ANTHROPIC_API_KEY"] = OPENROUTER_API_KEY
-    env["ANTHROPIC_AUTH_TOKEN"] = OPENROUTER_API_KEY  # Claude Code CLIが参照
-    env["ANTHROPIC_MODEL"] = "google/gemma-4-31b-it:free"  # --modelフラグは不可、env変数で指定
+    env["ANTHROPIC_BASE_URL"] = litellm_url
+    env["ANTHROPIC_API_KEY"] = "litellm-key"  # LiteLLMが実際のキーを管理
+    env["ANTHROPIC_AUTH_TOKEN"] = "litellm-key"
+    env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"  # LiteLLMのモデル一覧を取得
     env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 
     # --print + --verbose + --output-format stream-json の3つが必須
