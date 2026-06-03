@@ -29,3 +29,8 @@ general_settings:
 litellm_settings:
   drop_params: true
   set_verbose: false
+  callbacks: ["websearch_interception"]
+  websearch_interception_params:
+    enabled_providers:
+      - gemini
+    search_tool_name: tavily-search
