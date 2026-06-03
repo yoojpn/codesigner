@@ -731,6 +731,12 @@ async def dispatch_tool(name, args, session_dir, ws=None):
 
 # ---- Tool schemas ----
 
+def auto_title(message: str) -> str:
+    msg = message.replace("<thought off>", "").strip()
+    words = msg.strip().split()[:8]
+    title = " ".join(words)
+    return title[:50] + ("…" if len(title) > 50 else "")
+
 def clean_text(text: str) -> str:
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     # AIがツール呼び出しをJSONテキストとして出力してしまった場合を除去
