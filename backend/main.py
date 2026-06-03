@@ -841,18 +841,22 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
     # --cwd は存在しないフラグ → create_subprocess_execのcwd引数で渡す
     # --no-update-check は存在しないフラグ → 削除
     session_id = _claude_sessions.get(chat_id)
+    suppressed_message = f"<thought off>{user_message}"
     cmd = [
         claude_bin,
-        "-p", user_message,
+        "-p", suppressed_message,
         "--output-format", "stream-json",
         "--verbose",
         "--include-partial-messages",
         "--permission-mode", "acceptEdits",
         "--allowedTools", "Bash,Edit,Glob,Grep,LS,Read,Write,WebSearch,WebFetch",
-        "--system-prompt", "あなたはCodesignerというAIコーディングアシスタントです。必ず日本語のみで回答してください。英語で回答した後に日本語で繰り返すことは絶対にしないでください。",
+        "--system-prompt", "あなたはCodesignerというAIコーディングアシスタントです。必ず日本語のみで回答してください。思考過程は出力しないでください。",
     ]
     if session_id:
         cmd += ["--resume", session_id]
+        logger.info(f"[ClaudeCode] resuming session={session_id[:8]}")
+    else:
+        logger.info(f"[ClaudeCode] new session for chat_id={chat_id}")
 
     logger.info(f"[ClaudeCode] spawn: cwd={session_dir}")
 
