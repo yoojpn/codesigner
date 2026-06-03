@@ -99,7 +99,7 @@ def create_chat(title: str = "New Chat") -> dict:
     rel = str(session_dir.relative_to(WORKSPACE))
     ts = now_iso()
     with get_db() as db:
-        db.execute("INSERT INTO chats VALUES (?,?,?,?,?)", (chat_id, title, rel, ts, ts))
+        db.execute("INSERT INTO chats VALUES (?,?,?,?,?,?)", (chat_id, title, rel, ts, ts, None))
     return {"id": chat_id, "title": title, "session_dir": rel, "created_at": ts, "updated_at": ts, "messages": []}
 
 def get_chat(chat_id: str) -> dict | None:
