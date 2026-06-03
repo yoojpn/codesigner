@@ -809,11 +809,13 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
             return history
 
     litellm_url = os.getenv("LITELLM_BASE_URL", "http://localhost:4000")
+    litellm_key = os.getenv("LITELLM_MASTER_KEY", "sk-litellm")
     env = os.environ.copy()
     env["ANTHROPIC_BASE_URL"] = litellm_url
-    env["ANTHROPIC_API_KEY"] = "litellm-key"  # LiteLLMが実際のキーを管理
-    env["ANTHROPIC_AUTH_TOKEN"] = "litellm-key"
-    env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"  # LiteLLMのモデル一覧を取得
+    env["ANTHROPIC_API_KEY"] = litellm_key
+    env["ANTHROPIC_AUTH_TOKEN"] = litellm_key
+    env["ANTHROPIC_MODEL"] = "gemma-4-31b"  # litellm_config.yamlのmodel_name
+    env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
     env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 
     # --print + --verbose + --output-format stream-json の3つが必須
