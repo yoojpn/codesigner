@@ -3,7 +3,15 @@ model_list:
     litellm_params:
       model: gemini/gemini-3-flash
       api_key: os.environ/GEMINI_API_KEY
+  - model_name: claude-opus-4-8[1m]
+    litellm_params:
+      model: gemini/gemini-3-flash
+      api_key: os.environ/GEMINI_API_KEY
   - model_name: claude-opus-4-7
+    litellm_params:
+      model: gemini/gemini-3-flash
+      api_key: os.environ/GEMINI_API_KEY
+  - model_name: claude-opus-4-7[1m]
     litellm_params:
       model: gemini/gemini-3-flash
       api_key: os.environ/GEMINI_API_KEY
