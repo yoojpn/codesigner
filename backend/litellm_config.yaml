@@ -16,6 +16,9 @@ model_list:
       model: gemini/gemma-4-31b-it
       api_key: os.environ/GEMINI_API_KEY_4
 
+router_settings:
+  routing_strategy: least-busy
+
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 
