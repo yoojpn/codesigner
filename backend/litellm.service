@@ -1,0 +1,15 @@
+[Unit]
+Description=LiteLLM Proxy
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/codesigner/backend
+EnvironmentFile=/home/ubuntu/codesigner/backend/.env
+ExecStartPre=/bin/bash -c 'export GEMINI_API_KEY=$(grep GEMINI_API_KEY_1 /home/ubuntu/codesigner/backend/.env | cut -d= -f2)'
+ExecStart=/bin/bash -c 'source /home/ubuntu/codesigner/backend/.env && export GEMINI_API_KEY=$GEMINI_API_KEY_1 && /home/ubuntu/.local/bin/litellm --config /home/ubuntu/codesigner/backend/litellm_config.yaml --port 4000'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

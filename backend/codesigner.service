@@ -1,15 +1,15 @@
 [Unit]
 Description=Codesigner Backend
-After=network.target
+After=network.target litellm.service
+Requires=litellm.service
 
 [Service]
-Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/codesigner/backend
-ExecStart=/usr/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+EnvironmentFile=/home/ubuntu/codesigner/backend/.env
+ExecStart=/home/ubuntu/.local/bin/uvicorn main:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=5
-Environment=WORKSPACE=/workspace
 
 [Install]
 WantedBy=multi-user.target
