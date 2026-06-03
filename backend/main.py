@@ -840,6 +840,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
             stderr=asyncio.subprocess.PIPE,
             env=env,
             cwd=str(session_dir),  # --cwdフラグではなくここで指定
+            limit=10 * 1024 * 1024,  # 10MB: Gemma応答が大きいためデフォルト64KBを拡張
         )
 
         assistant_text = ""
