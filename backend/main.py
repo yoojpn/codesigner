@@ -8,8 +8,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Uplo
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from google import genai
-from google.genai import types
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -63,31 +61,10 @@ def get_db():
 def now_iso():
     return datetime.utcnow().isoformat()
 
-# ---- API Key Rotator ----
-class KeyRotator:
-    def __init__(self):
-        keys_raw = os.getenv("GEMMA_API_KEYS", "")
-        self.keys = [k.strip() for k in keys_raw.split(",") if k.strip()]
-        self.index = 0
-        self._clients: dict = {}
-
-    def next(self) -> str:
-        if not self.keys:
-            raise RuntimeError("No API keys configured. Set GEMMA_API_KEYS in .env")
-        key = self.keys[self.index % len(self.keys)]
-        self.index += 1
-        return key
-
-    def get_client(self, key: str):
-        if key not in self._clients:
-            self._clients[key] = genai.Client(api_key=key)
-        return self._clients[key]
-
-    def next_client(self):
-        key = self.next()
-        return key, self.get_client(key)
-
-rotator = KeyRotator()
+# ---- OpenRouter API Key ----
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+if not OPENROUTER_API_KEY:
+    raise RuntimeError("OPENROUTER_API_KEY not set in .env")
 
 # ---- Session / Chat ----
 def make_session_dir() -> Path:
@@ -753,149 +730,6 @@ async def dispatch_tool(name, args, session_dir, ws=None):
     return {"error": f"Unknown tool: {name}"}
 
 # ---- Tool schemas ----
-TOOL_DEFS = [types.Tool(function_declarations=[
-    types.FunctionDeclaration(name="list_files",description="List files in session directory",
-        parameters=types.Schema(type="OBJECT",properties={"path":types.Schema(type="STRING")},required=[])),
-    types.FunctionDeclaration(name="read_file",
-        description="Read file content. Large files are auto-chunked to 500 lines. Use start_line/end_line to read specific sections.",
-        parameters=types.Schema(type="OBJECT",properties={
-            "path":types.Schema(type="STRING"),
-            "start_line":types.Schema(type="INTEGER",description="First line to read (1-indexed)"),
-            "end_line":types.Schema(type="INTEGER",description="Last line to read (inclusive)")
-        },required=["path"])),
-    types.FunctionDeclaration(name="search_in_file",
-        description="Search for a pattern/function name inside a file and return matching lines with context. Best for locating specific code in large files.",
-        parameters=types.Schema(type="OBJECT",properties={
-            "path":types.Schema(type="STRING"),
-            "pattern":types.Schema(type="STRING",description="Text or regex to search for"),
-            "context_lines":types.Schema(type="INTEGER",description="Lines of context around each match (default 3)")
-        },required=["path","pattern"])),
-    types.FunctionDeclaration(name="write_file",description="Write or create a file",
-        parameters=types.Schema(type="OBJECT",properties={"path":types.Schema(type="STRING"),"content":types.Schema(type="STRING")},required=["path","content"])),
-    types.FunctionDeclaration(name="apply_diff",description="Apply unified diff patch",
-        parameters=types.Schema(type="OBJECT",properties={"path":types.Schema(type="STRING"),"diff":types.Schema(type="STRING")},required=["path","diff"])),
-    types.FunctionDeclaration(name="run_command",description="Run shell command",
-        parameters=types.Schema(type="OBJECT",properties={"command":types.Schema(type="STRING"),"cwd":types.Schema(type="STRING")},required=["command"])),
-    types.FunctionDeclaration(name="delete_file",description="Delete file or directory",
-        parameters=types.Schema(type="OBJECT",properties={"path":types.Schema(type="STRING")},required=["path"])),
-    types.FunctionDeclaration(name="search_files",description="Search files by name",
-        parameters=types.Schema(type="OBJECT",properties={"query":types.Schema(type="STRING"),"path":types.Schema(type="STRING")},required=["query"])),
-    types.FunctionDeclaration(name="web_search",description="Search the web",
-        parameters=types.Schema(type="OBJECT",properties={"query":types.Schema(type="STRING")},required=["query"])),
-    types.FunctionDeclaration(name="fetch_url",description="Fetch URL content",
-        parameters=types.Schema(type="OBJECT",properties={"url":types.Schema(type="STRING")},required=["url"])),
-    types.FunctionDeclaration(name="copy_to_output",description="Copy file to output for download",
-        parameters=types.Schema(type="OBJECT",properties={"path":types.Schema(type="STRING"),"output_name":types.Schema(type="STRING")},required=["path"])),
-])]
-
-AUTO_THINKING_KEYWORDS = [
-    "debug", "fix", "error", "bug", "why", "implement", "design", "architect",
-    "optimize", "refactor", "algorithm", "analyze", "compare", "explain",
-    "バグ", "エラー", "修正", "実装", "設計", "最適化", "リファクタ", "アルゴリズム",
-    "分析", "なぜ", "どうして", "仕組み", "デバッグ",
-]
-
-def should_think(message: str) -> bool:
-    lower = message.lower()
-    return any(kw in lower for kw in AUTO_THINKING_KEYWORDS)
-
-def make_system_prompt(session_dir: Path, thinking_on: bool = False) -> str:
-    rel = str(session_dir.relative_to(WORKSPACE))
-    prompt = "You are Codesigner — a senior software engineer and AI coding agent running on a Linux VM.\n"
-    prompt += "Session working directory: /workspace/" + rel + "\n"
-    prompt += """All file paths are relative to this directory.
-If the user writes in Japanese, respond entirely in Japanese (except code identifiers).
-
-# How to work
-
-You bring a senior engineer's judgment to every task, but let it arrive through attention rather than assumption.
-Read the codebase first. Let the shape of the existing system teach you how to move.
-
-## Before touching any file
-
-For every feature, button, function, modal, CSS class, or variable you are about to add:
-1. Use search_in_file to check if it already exists in the file.
-2. If it exists: read that section, then edit it. Never add a second copy.
-3. If it does not exist: implement it fresh.
-
-This is the single most important rule. A button that appears twice, a function defined twice,
-a CSS class written twice — these are bugs you introduced. Search first, always.
-
-For large files (> 500 lines), the mandatory workflow is:
-  search_in_file (find the section) → read_file(start_line, end_line) (read exact lines) → apply_diff (patch only that section)
-Never build a patch from memory. Always read the exact current content first.
-
-## How to edit files
-
-Use apply_diff with V4A format (preferred — handles ${}, backticks, special chars):
-
-  *** Begin Patch
-  *** Update File: path/to/file
-  @@ anchor: unique nearby function name or string
-   context line
-  -line to remove
-  +line to add
-   context line
-  *** End Patch
-
-One patch can contain multiple @@ hunks across the same file.
-Batch all changes to a file into one apply_diff call — do not call it once per location.
-
-Alternative for simple edits without special chars:
-  <<<<<<< SEARCH
-  exact lines to find
-  =======
-  replacement
-  >>>>>>> REPLACE
-
-write_file is only for brand-new files that do not exist yet. Never use it on existing files.
-
-If apply_diff fails: read the patch_failure_context in the error, fix only the failing SEARCH block, retry immediately.
-If it fails twice: use search_in_file with a shorter pattern, then read_file to get exact lines, then retry.
-
-## Tool use vs text
-
-File edits happen through apply_diff or write_file. Commands run through run_command.
-Typing "*** Begin Patch" as plain text does not change any file — it is a critical failure.
-Typing "<<<<<<< SEARCH" as plain text does not change any file — it is a critical failure.
-If you catch yourself about to type a patch into text: stop and call the tool instead.
-
-Call the tool. Do not describe what you are about to do. Do not output "実装します" and stop.
-If the next action is a tool call, make the tool call. Zero explanatory text before it.
-After all tools finish, send one concise summary of what changed.
-
-## Staying on task
-
-Keep edits scoped to what the request actually requires. Do not refactor unrelated code.
-Prefer the file's existing patterns, naming, and structure over inventing new abstractions.
-A complete implementation is the only acceptable result — do not stop mid-feature.
-After each apply_diff success, immediately check whether more locations need editing.
-The task is done when every needed file is changed and the user has a summary.
-
-## Other tools
-
-- run_command: run shell commands, install packages, build.
-- web_search + fetch_url: look up docs or APIs.
-- copy_to_output: make a file downloadable.
-- User uploads are in input/ (read-only). To edit: cp input/file.html file.html first, then edit the copy.
-
-## Failure recovery
-
-If a tool returns nothing or fails, do not repeat the same call. Try a different approach:
-search_in_file found nothing → read_file with a line range.
-apply_diff failed twice → use search_in_file to locate the section, read exact lines, retry.
-Stuck after 2 attempts → tell the user what you tried and what you need.
-"""
-    return prompt
-
-def auto_title(message: str) -> str:
-    msg = message.replace("<thought off>", "").strip()
-    words = msg.strip().split()[:8]
-    title = " ".join(words)
-    return title[:50] + ("…" if len(title) > 50 else "")
-
-MODELS = ["gemini-3.1-flash-lite"]
-
 
 def clean_text(text: str) -> str:
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
@@ -947,9 +781,10 @@ def _tool_status_label(tool: str, args: dict) -> str:
 async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir: Path, chat_id: str, thinking_level: str = "none"):
     """
     Claude Code CLIをサブプロセスとして起動し、NDJSONストリームをWebSocketに流す。
-    LiteLLMプロキシ(localhost:4000)経由でGeminiキーローテーションを使用。
+    OpenRouter BYOK経由でGemma 4 31B（google/gemma-4-31b-it:free）を使用。
+    thinking漏れはOpenRouter側でreasoning_detailsに分離されるためcontentには混入しない。
     """
-    litellm_url = os.getenv("LITELLM_BASE_URL", "http://localhost:4000")
+    openrouter_url = "https://openrouter.ai/api/v1"
     claude_bin = shutil.which("claude") or os.path.expanduser("~/.npm-global/bin/claude")
 
     if not claude_bin or not os.path.exists(claude_bin):
@@ -968,8 +803,8 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
             return history
 
     env = os.environ.copy()
-    env["ANTHROPIC_BASE_URL"] = litellm_url
-    env["ANTHROPIC_API_KEY"] = "dummy"  # LiteLLMが実際のキーを管理
+    env["ANTHROPIC_BASE_URL"] = openrouter_url
+    env["ANTHROPIC_API_KEY"] = OPENROUTER_API_KEY
     env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 
     # --print + --verbose + --output-format stream-json の3つが必須
@@ -980,8 +815,9 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
         claude_bin,
         "-p", user_message,
         "--output-format", "stream-json",
-        "--verbose",                          # stream-jsonに必須
-        "--permission-mode", "acceptEdits",  # ファイル編集を自動承認
+        "--verbose",                           # stream-jsonに必須
+        "--permission-mode", "acceptEdits",   # ファイル編集を自動承認
+        "--model", "google/gemma-4-31b-it:free",  # OpenRouter経由でGemma 4 31B
         "--allowedTools", "Bash,Edit,Glob,Grep,LS,Read,Write",
     ]
 
@@ -1335,7 +1171,7 @@ async def upload_file(file: UploadFile = File(...), chat_id: str = Form(""), pat
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "workspace": str(WORKSPACE), "keys": len(rotator.keys)}
+    return {"status": "ok", "workspace": str(WORKSPACE), "model": "google/gemma-4-31b-it:free", "via": "openrouter"}
 
 if Path("../frontend/dist").exists():
     app.mount("/", StaticFiles(directory="../frontend/dist", html=True), name="static")
