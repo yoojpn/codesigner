@@ -16,15 +16,20 @@ model_list:
       model: gemini/gemma-4-31b-it
       api_key: os.environ/GEMINI_API_KEY
 
-general_settings:
-  master_key: os.environ/LITELLM_MASTER_KEY
-  port: 4000
-
 litellm_settings:
   drop_params: true
   set_verbose: false
+  callbacks:
+    - websearch_interception:
+        enabled_providers:
+          - gemini
 
-mcp_servers:
-  web_search:
-    type: tavily
-    api_key: os.environ/TAVILY_API_KEY
+search_tools:
+  - search_tool_name: tavily-search
+    litellm_params:
+      search_provider: tavily
+      api_key: os.environ/TAVILY_API_KEY
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  port: 4000
