@@ -2,25 +2,23 @@ model_list:
   - model_name: claude-opus-4-8
     litellm_params:
       model: gemini/gemma-4-31b-it
-      api_key: os.environ/GEMINI_API_KEY_1
+      api_key: os.environ/GEMINI_API_KEY
   - model_name: claude-opus-4-7
     litellm_params:
       model: gemini/gemma-4-31b-it
-      api_key: os.environ/GEMINI_API_KEY_2
+      api_key: os.environ/GEMINI_API_KEY
   - model_name: claude-sonnet-4-6
     litellm_params:
       model: gemini/gemma-4-31b-it
-      api_key: os.environ/GEMINI_API_KEY_3
+      api_key: os.environ/GEMINI_API_KEY
   - model_name: claude-haiku-4-5-20251001
     litellm_params:
       model: gemini/gemma-4-31b-it
-      api_key: os.environ/GEMINI_API_KEY_4
-
-router_settings:
-  routing_strategy: least-busy
+      api_key: os.environ/GEMINI_API_KEY
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
+  port: 4000
 
 litellm_settings:
   drop_params: true
