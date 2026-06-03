@@ -917,14 +917,16 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
                 elif mtype == "assistant":
                     # アシスタントのテキスト + ツール呼び出し宣言
+                    # stream_eventで既にストリーミング済みのテキストは重複送信しない
                     content = msg.get("message", {}).get("content", [])
                     for block in content:
                         if not isinstance(block, dict):
                             continue
                         btype = block.get("type", "")
                         if btype == "text":
+                            # stream_eventで既に流していればスキップ（重複防止）
                             txt = clean_text(block.get("text", ""))
-                            if txt:
+                            if txt and txt not in assistant_text:
                                 assistant_text += txt
                                 await ws.send_json({"type": "stream", "content": txt})
                         elif btype == "tool_use":
@@ -968,8 +970,8 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     final = msg.get("result", "")
                     if final and isinstance(final, str) and not is_error:
                         cleaned = clean_text(final)
-                        # assistantメッセージで既にストリームしていない場合のみ送信
-                        if cleaned and cleaned not in assistant_text:
+                        # stream_event/assistantで既にストリーミング済みならスキップ
+                        if cleaned and not assistant_text:
                             assistant_text = cleaned
                             await ws.send_json({"type": "stream", "content": cleaned})
                     if is_error and final:
