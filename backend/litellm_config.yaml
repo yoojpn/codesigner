@@ -23,3 +23,8 @@ general_settings:
 litellm_settings:
   drop_params: true
   set_verbose: false
+
+mcp_servers:
+  web_search:
+    type: tavily
+    api_key: os.environ/TAVILY_API_KEY
