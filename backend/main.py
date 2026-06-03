@@ -882,7 +882,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
                 mtype = msg.get("type", "")
 
-                elif mtype == "stream_event":
+                if mtype == "stream_event":
                     # --include-partial-messagesで流れてくるトークンデルタ
                     event = msg.get("event", {})
                     if event.get("type") == "content_block_delta":
