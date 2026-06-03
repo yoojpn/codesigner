@@ -857,7 +857,6 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
     cmd = [
         claude_bin,
         "-p", suppressed_message,
-        "--model", "claude-opus-4-8",
         "--output-format", "stream-json",
         "--verbose",
         "--include-partial-messages",
