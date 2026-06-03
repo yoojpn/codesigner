@@ -29,6 +29,8 @@ general_settings:
 litellm_settings:
   drop_params: true
   set_verbose: false
+  truncate_texts: true
+  max_input_tokens: 200000
   callbacks: ["websearch_interception"]
   websearch_interception_params:
     enabled_providers:
