@@ -848,7 +848,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
         "--verbose",
         "--include-partial-messages",
         "--permission-mode", "acceptEdits",
-        "--allowedTools", "Bash,Edit,Glob,Grep,LS,Read,Write",
+        "--allowedTools", "Bash,Edit,Glob,Grep,LS,Read,Write,WebSearch,WebFetch",
         "--system-prompt", "あなたはCodesignerというAIコーディングアシスタントです。必ず日本語のみで回答してください。英語で回答した後に日本語で繰り返すことは絶対にしないでください。",
     ]
     if session_id:
