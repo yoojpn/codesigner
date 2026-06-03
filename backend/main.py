@@ -798,6 +798,9 @@ def _tool_status_label(tool: str, args: dict) -> str:
 
 
 # ---- Agent Loop: Claude Code CLI subprocess (NDJSON) ----
+# chat_idごとのClaudeCodeセッションIDを保持
+_claude_sessions: dict[str, str] = {}
+
 async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir: Path, chat_id: str, thinking_level: str = "none"):
     """
     Claude Code CLIをサブプロセスとして起動し、NDJSONストリームをWebSocketに流す。
@@ -837,16 +840,19 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
     # --input-format stream-json は --print と併用する場合のみ有効
     # --cwd は存在しないフラグ → create_subprocess_execのcwd引数で渡す
     # --no-update-check は存在しないフラグ → 削除
+    session_id = _claude_sessions.get(chat_id)
     cmd = [
         claude_bin,
         "-p", user_message,
         "--output-format", "stream-json",
-        "--verbose",                           # stream-jsonに必須
-        "--include-partial-messages",          # トークンレベルのストリーミングに必須
-        "--permission-mode", "acceptEdits",   # ファイル編集を自動承認
+        "--verbose",
+        "--include-partial-messages",
+        "--permission-mode", "acceptEdits",
         "--allowedTools", "Bash,Edit,Glob,Grep,LS,Read,Write",
         "--system-prompt", "あなたはCodesignerというAIコーディングアシスタントです。必ず日本語のみで回答してください。英語で回答した後に日本語で繰り返すことは絶対にしないでください。",
     ]
+    if session_id:
+        cmd += ["--resume", session_id]
 
     logger.info(f"[ClaudeCode] spawn: cwd={session_dir}")
 
@@ -959,8 +965,10 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                     await ws.send_json({"type": "stream_end"})
 
                 elif mtype == "system":
-                    # init情報（無視）
-                    logger.info(f"[ClaudeCode] system init model={msg.get('model','')} session={msg.get('session_id','')[:8]}")
+                    sid = msg.get("session_id", "")
+                    if sid:
+                        _claude_sessions[chat_id] = sid
+                    logger.info(f"[ClaudeCode] system init model={msg.get('model','')} session={sid[:8] if sid else ''}")
 
                 else:
                     logger.debug(f"[ClaudeCode] unknown msg type={mtype}")
