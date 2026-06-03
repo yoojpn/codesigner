@@ -594,6 +594,30 @@ a:hover {
 .tool-detail-result.ok { color: var(--success); flex-shrink: 0; }
 .tool-detail-result.error { color: var(--error, #f87171); flex-shrink: 0; font-size: 10px; }
 
+/* ツール詳細：各ツールのコンテンツ */
+.tool-detail-item { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.tool-detail-item:last-child { border-bottom: none; }
+.tool-detail-output {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text2);
+  background: var(--bg1);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.45;
+  margin: 0;
+}
+.tool-detail-search-results { display: flex; flex-direction: column; gap: 3px; }
+.tool-detail-search-row { display: flex; flex-direction: column; gap: 1px; padding: 3px 0; }
+.tool-detail-search-url { font-size: 10.5px; color: var(--accent); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-detail-search-url:hover { text-decoration: underline; }
+.tool-detail-search-title { font-size: 11px; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ---- Diff Result Card (Claude Code style) ---- */
 .diff-panel {
   display: flex;

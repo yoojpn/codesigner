@@ -472,31 +472,48 @@ function ToolGroup({ group }) {
       {expanded && (
         <div className="tool-group-details">
           {items.map((t, i) => (
-            <div key={i} className="tool-detail-row">
-              <span className="tool-detail-name">{t.tool}</span>
-              {t.tool === 'run_command' && <span className="tool-detail-args">$ {t.args?.command}</span>}
-              {t.tool === 'web_search' && <span className="tool-detail-args">"{t.args?.query}"</span>}
-              {['read_file','write_file','apply_diff'].includes(t.tool) && <span className="tool-detail-args">{t.args?.path}</span>}
-              {t.result && (
-                <span className={`tool-detail-result ${t.result.error && t.result.error !== 'already_applied' ? 'error' : 'ok'}`}>
-                  {t.result.error && t.result.error !== 'already_applied' ? `✕ ${t.result.error}` : '✓'}
-                </span>
+            <div key={i} className="tool-detail-item">
+              {/* ヘッダ行：ツール名 + args概要 + 結果 */}
+              <div className="tool-detail-row">
+                <span className="tool-detail-name">{t.tool}</span>
+                {t.tool === 'Bash' && <span className="tool-detail-args">$ {t.args?.command}</span>}
+                {t.tool === 'WebSearch' && <span className="tool-detail-args">🔍 {t.args?.query}</span>}
+                {t.tool === 'WebFetch' && <span className="tool-detail-args">🌐 {t.args?.url}</span>}
+                {['Read','Write','Edit'].includes(t.tool) && <span className="tool-detail-args">{t.args?.file_path || t.args?.path}</span>}
+                {/* 後方互換：小文字ツール名 */}
+                {t.tool === 'run_command' && <span className="tool-detail-args">$ {t.args?.command}</span>}
+                {t.tool === 'web_search' && <span className="tool-detail-args">🔍 {t.args?.query}</span>}
+                {['read_file','write_file','apply_diff'].includes(t.tool) && <span className="tool-detail-args">{t.args?.path}</span>}
+                {t.result && (
+                  <span className={`tool-detail-result ${t.result.error && t.result.error !== 'already_applied' ? 'error' : 'ok'}`}>
+                    {t.result.error && t.result.error !== 'already_applied' ? `✕ ${t.result.error}` : '✓'}
+                  </span>
+                )}
+              </div>
+              {/* Bash stdout/stderr */}
+              {(t.tool === 'Bash' || t.tool === 'run_command') && t.result?.output && (
+                <pre className="tool-detail-output">{String(t.result.output).slice(0, 2000)}</pre>
+              )}
+              {(t.tool === 'Bash' || t.tool === 'run_command') && t.result?.stdout && (
+                <pre className="tool-detail-output">{(t.result.stdout + (t.result.stderr ? '\n' + t.result.stderr : '')).slice(0, 2000)}</pre>
+              )}
+              {/* WebSearch 結果URL一覧 */}
+              {(t.tool === 'WebSearch' || t.tool === 'web_search') && t.result?.results && (
+                <div className="tool-detail-search-results">
+                  {(t.result.results || []).slice(0, 5).map((r, j) => (
+                    <div key={j} className="tool-detail-search-row">
+                      <a className="tool-detail-search-url" href={r.url} target="_blank" rel="noreferrer">{r.url}</a>
+                      {r.title && <span className="tool-detail-search-title">{r.title}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* WebSearch/Bash の output フォールバック */}
+              {(t.tool === 'WebSearch' || t.tool === 'web_search') && t.result?.output && !t.result?.results && (
+                <pre className="tool-detail-output">{String(t.result.output).slice(0, 1000)}</pre>
               )}
             </div>
           ))}
-          {/* cmdのstdout表示 */}
-          {items.filter(t => t.tool === 'run_command' && t.result?.stdout).map((t, i) => (
-            <pre key={i} className="cmd-output">{(t.result.stdout + (t.result.stderr || '')).slice(0, 800)}</pre>
-          ))}
-          {/* 検索結果 */}
-          {items.filter(t => t.tool === 'web_search' && t.result?.results).flatMap((t, i) =>
-            (t.result.results || []).slice(0, 3).map((r, j) => (
-              <div key={`${i}-${j}`} className="search-result">
-                <div className="search-result-url">{r.url}</div>
-                <div className="search-result-snippet">{r.snippet}</div>
-              </div>
-            ))
-          )}
         </div>
       )}
     </div>
