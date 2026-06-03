@@ -1,5 +1,22 @@
 model_list:
+  # Claude Code が送ってくるモデル名を全部Gemma 4 31Bに転送
+  - model_name: claude-opus-4-8
+    litellm_params:
+      model: openrouter/google/gemma-4-31b-it:free
+      api_key: os.environ/OPENROUTER_API_KEY
+  - model_name: claude-opus-4-7
+    litellm_params:
+      model: openrouter/google/gemma-4-31b-it:free
+      api_key: os.environ/OPENROUTER_API_KEY
+  - model_name: claude-opus-4-6
+    litellm_params:
+      model: openrouter/google/gemma-4-31b-it:free
+      api_key: os.environ/OPENROUTER_API_KEY
   - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: openrouter/google/gemma-4-31b-it:free
+      api_key: os.environ/OPENROUTER_API_KEY
+  - model_name: claude-haiku-4-5-20251001
     litellm_params:
       model: openrouter/google/gemma-4-31b-it:free
       api_key: os.environ/OPENROUTER_API_KEY
@@ -11,5 +28,5 @@ router_settings:
   num_retries: 3
 
 litellm_settings:
-  drop_params: true  # Claude Code固有パラメータをOpenRouterに渡さない
+  drop_params: true
   set_verbose: false
