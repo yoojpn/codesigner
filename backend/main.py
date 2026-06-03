@@ -845,6 +845,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
         "--include-partial-messages",          # トークンレベルのストリーミングに必須
         "--permission-mode", "acceptEdits",   # ファイル編集を自動承認
         "--allowedTools", "Bash,Edit,Glob,Grep,LS,Read,Write",
+        "--system-prompt", "あなたはCodesignerというAIコーディングアシスタントです。必ず日本語のみで回答してください。英語で回答した後に日本語で繰り返すことは絶対にしないでください。",
     ]
 
     logger.info(f"[ClaudeCode] spawn: cwd={session_dir}")
@@ -863,6 +864,8 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
         )
 
         assistant_text = ""
+        _thinking_buffer = ""   # <think>...</think>を溜めるバッファ
+        _in_thinking = False    # thinking中フラグ
         # tool_useとtool_resultを紐づけるためのキャッシュ
         _pending_tool_uses: dict = {}  # id -> {name, input}
 
