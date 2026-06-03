@@ -1,12 +1,40 @@
 model_list:
-  - model_name: gemma-4-31b
+  - model_name: claude-opus-4-8
     litellm_params:
-      model: openrouter/google/gemma-4-31b-it:free
-      api_key: os.environ/OPENROUTER_API_KEY
-      api_base: https://openrouter.ai/api/v1
+      model: gemini/gemma-4-31b-it
+      api_key: os.environ/GEMINI_API_KEY_1
+      rpm: 15
+  - model_name: claude-opus-4-8
+    litellm_params:
+      model: gemini/gemma-4-31b-it
+      api_key: os.environ/GEMINI_API_KEY_2
+      rpm: 15
+  - model_name: claude-opus-4-8
+    litellm_params:
+      model: gemini/gemma-4-31b-it
+      api_key: os.environ/GEMINI_API_KEY_3
+      rpm: 15
+  - model_name: claude-opus-4-8
+    litellm_params:
+      model: gemini/gemma-4-31b-it
+      api_key: os.environ/GEMINI_API_KEY_4
+      rpm: 15
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: gemini/gemma-4-31b-it
+      api_key: os.environ/GEMINI_API_KEY_1
+      rpm: 15
+  - model_name: claude-haiku-4-5-20251001
+    litellm_params:
+      model: gemini/gemma-4-31b-it
+      api_key: os.environ/GEMINI_API_KEY_1
+      rpm: 15
 
-general_settings:
-  master_key: os.environ/LITELLM_MASTER_KEY
+router_settings:
+  routing_strategy: simple-shuffle
+  allowed_fails: 1
+  cooldown_time: 60
+  num_retries: 3
 
 litellm_settings:
   drop_params: true

@@ -814,8 +814,6 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
     env["ANTHROPIC_BASE_URL"] = litellm_url
     env["ANTHROPIC_API_KEY"] = litellm_key
     env["ANTHROPIC_AUTH_TOKEN"] = litellm_key
-    env["ANTHROPIC_MODEL"] = "gemma-4-31b"  # litellm_config.yamlのmodel_name
-    env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
     env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 
     # --print + --verbose + --output-format stream-json の3つが必須
