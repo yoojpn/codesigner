@@ -850,7 +850,15 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
         "--include-partial-messages",
         "--permission-mode", "acceptEdits",
         "--allowedTools", "Bash,Edit,Glob,Grep,LS,Read,Write,WebSearch,WebFetch",
-        "--system-prompt", "あなたはCodesignerというAIコーディングアシスタントです。必ず日本語のみで回答してください。思考過程は出力しないでください。",
+        "--system-prompt", (
+            "あなたはCodesignerというAIコーディングアシスタントです。\n"
+            "【絶対ルール】\n"
+            "1. 回答は必ず日本語のみで行うこと。英語で回答してはならない。\n"
+            "2. ツール（Read/Bash/WebSearch等）の実行結果をそのまま出力してはならない。必ず自分の言葉で日本語に要約・解釈して回答すること。\n"
+            "3. 内部思考・推論過程・分析過程を出力してはならない。最終的な回答のみ出力すること。\n"
+            "4. 'The repository...', 'Here is a summary...', 'pasted' などの英語フレーズは絶対に出力してはならない。\n"
+            "5. ファイルやリポジトリを読んだ場合は、その内容を日本語で解釈した結果のみを伝えること。"
+        ),
     ]
     if session_id:
         cmd += ["--resume", session_id]

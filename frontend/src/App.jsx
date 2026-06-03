@@ -4,7 +4,34 @@ import { ChevronRight, ChevronDown, File, Folder, FolderOpen, X, Check, Terminal
   Globe, Code2, Cpu, Paperclip, MessageSquare, Edit2, Copy, Lock, FilePen, FileText } from 'lucide-react'
 import MonacoEditor from '@monaco-editor/react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import './App.css'
+
+// Markdown用カスタムコンポーネント（コードブロックなど）
+const MarkdownComponents = {
+  code({ node, inline, className, children, ...props }) {
+    const match = /language-(\w+)/.exec(className || '')
+    if (!inline) {
+      return (
+        <div className="md-code-block">
+          {match && <div className="md-code-lang">{match[1]}</div>}
+          <pre className="md-pre"><code className={className} {...props}>{children}</code></pre>
+        </div>
+      )
+    }
+    return <code className="md-inline-code" {...props}>{children}</code>
+  },
+  table({ children }) { return <div className="md-table-wrap"><table className="md-table">{children}</table></div> },
+  a({ href, children }) { return <a href={href} target="_blank" rel="noreferrer">{children}</a> },
+}
+
+function Markdown({ children, streaming = false }) {
+  return (
+    <div className={`markdown-body${streaming ? ' streaming' : ''}`}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MarkdownComponents}>{children || ''}</ReactMarkdown>
+    </div>
+  )
+}
 
 // ---- Backend URL ----
 const BACKEND_URL = (typeof __BACKEND_URL__ !== 'undefined' && __BACKEND_URL__) ? __BACKEND_URL__.replace(/\/$/, '') : ''
@@ -712,8 +739,8 @@ function MessageList({ messages, onRetry, onEditSend, activeChatId, diffResults 
           <div key={i} className="message agent-msg">
             <div className="msg-avatar"><Cpu size={12} /></div>
             <div className="msg-body">
-              <div className="msg-content markdown-body">
-                {msg.type === 'streaming' ? <span className="streaming-text">{msg.content}</span> : <ReactMarkdown>{msg.content}</ReactMarkdown>}
+              <div className="msg-content">
+                <Markdown streaming={msg.type === 'streaming'}>{msg.content}</Markdown>
               </div>
               <div className="agent-msg-actions">
                 <button className={`msg-action-btn ${copiedIdx === i ? 'copied' : ''}`} title="コピー" onClick={() => copyText(msg.content, i)}>
@@ -736,7 +763,7 @@ function MessageList({ messages, onRetry, onEditSend, activeChatId, diffResults 
         )
         if (msg.type === 'system') return (
           <div key={i} className="message system-msg">
-            <ReactMarkdown>{msg.content}</ReactMarkdown>
+            <Markdown>{msg.content}</Markdown>
           </div>
         )
         if (msg.type === 'tool_group') return <ToolGroup key={i} group={msg} />
