@@ -847,7 +847,6 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
     env["GEMINI_API_KEY"] = gemini_key
     env["GOOGLE_API_KEY"] = gemini_key
     env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
-    env["ANTHROPIC_MODEL"] = "claude-opus-4-8"  # [1m]サフィックス問題を回避
 
     # --print + --verbose + --output-format stream-json の3つが必須
     # --input-format stream-json は --print と併用する場合のみ有効
