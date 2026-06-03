@@ -38,10 +38,13 @@ def init_db():
             created_at TEXT NOT NULL,
             FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
         )""")
-        # マイグレーション: msg_typeカラムがない場合追加
+        # マイグレーション
         cols = [r[1] for r in c.execute("PRAGMA table_info(messages)").fetchall()]
         if 'msg_type' not in cols:
             c.execute("ALTER TABLE messages ADD COLUMN msg_type TEXT NOT NULL DEFAULT 'text'")
+        chat_cols = [r[1] for r in c.execute("PRAGMA table_info(chats)").fetchall()]
+        if 'claude_session_id' not in chat_cols:
+            c.execute("ALTER TABLE chats ADD COLUMN claude_session_id TEXT")
         c.execute("PRAGMA foreign_keys = ON")
         c.commit()
 
@@ -118,6 +121,15 @@ def save_message(chat_id: str, role: str, content: str, msg_type: str = "text"):
         db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?)",
                    (uuid.uuid4().hex, chat_id, role, content, msg_type, now_iso()))
         db.execute("UPDATE chats SET updated_at=? WHERE id=?", (now_iso(), chat_id))
+
+def save_claude_session_id(chat_id: str, session_id: str):
+    with get_db() as db:
+        db.execute("UPDATE chats SET claude_session_id=? WHERE id=?", (session_id, chat_id))
+
+def get_claude_session_id(chat_id: str) -> str | None:
+    with get_db() as db:
+        row = db.execute("SELECT claude_session_id FROM chats WHERE id=?", (chat_id,)).fetchone()
+        return row["claude_session_id"] if row else None
 
 def truncate_messages_from(chat_id: str, from_index: int):
     """指定インデックス以降のメッセージをDBから削除"""
@@ -840,7 +852,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
     # --input-format stream-json は --print と併用する場合のみ有効
     # --cwd は存在しないフラグ → create_subprocess_execのcwd引数で渡す
     # --no-update-check は存在しないフラグ → 削除
-    session_id = _claude_sessions.get(chat_id)
+    session_id = get_claude_session_id(chat_id)
     suppressed_message = f"<thought off>{user_message}"
     cmd = [
         claude_bin,
@@ -933,6 +945,14 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                             tool_id = block.get("id", "")
                             tool_name = block.get("name", "")
                             tool_input = block.get("input", {})
+                            # Edit/Writeの前にスナップショットを撮る（diff計算の基点）
+                            if tool_name in ("Edit", "Write", "write_file", "apply_diff"):
+                                fpath_str = tool_input.get("file_path") or tool_input.get("path", "")
+                                if fpath_str:
+                                    fpath = (session_dir / fpath_str).resolve()
+                                    fkey = str(fpath)
+                                    if fkey not in _file_snapshots and fpath.exists():
+                                        _file_snapshots[fkey] = fpath.read_text(errors="replace")
                             # tool_idでキャッシュ（後でtool_resultと紐づけるため）
                             _pending_tool_uses[tool_id] = {"name": tool_name, "input": tool_input}
                             label = _tool_status_label(tool_name, tool_input)
@@ -982,7 +1002,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
                 elif mtype == "system":
                     sid = msg.get("session_id", "")
                     if sid:
-                        _claude_sessions[chat_id] = sid
+                        save_claude_session_id(chat_id, sid)
                     logger.info(f"[ClaudeCode] system init model={msg.get('model','')} session={sid[:8] if sid else ''}")
 
                 else:
