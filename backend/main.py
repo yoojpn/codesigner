@@ -842,6 +842,7 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
         "-p", user_message,
         "--output-format", "stream-json",
         "--verbose",                           # stream-jsonに必須
+        "--include-partial-messages",          # トークンレベルのストリーミングに必須
         "--permission-mode", "acceptEdits",   # ファイル編集を自動承認
         "--allowedTools", "Bash,Edit,Glob,Grep,LS,Read,Write",
     ]
@@ -881,7 +882,18 @@ async def run_agent(user_message: str, history: list, ws: WebSocket, session_dir
 
                 mtype = msg.get("type", "")
 
-                if mtype == "assistant":
+                elif mtype == "stream_event":
+                    # --include-partial-messagesで流れてくるトークンデルタ
+                    event = msg.get("event", {})
+                    if event.get("type") == "content_block_delta":
+                        delta = event.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            txt = delta.get("text", "")
+                            if txt:
+                                assistant_text += txt
+                                await ws.send_json({"type": "stream", "content": txt})
+
+                elif mtype == "assistant":
                     # アシスタントのテキスト + ツール呼び出し宣言
                     content = msg.get("message", {}).get("content", [])
                     for block in content:
